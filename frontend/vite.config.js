@@ -9,6 +9,10 @@ export default defineConfig({
         target: "http://localhost:8000",
         changeOrigin: true,
       },
+      "/solve-grid": {
+        target: "http://localhost:8000",
+        changeOrigin: true,
+      },
     },
   },
 });

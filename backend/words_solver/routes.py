@@ -7,6 +7,7 @@ from flask import Blueprint, request
 from PIL import Image, UnidentifiedImageError
 
 from . import metrics
+from .grid_solver import GridValidationError, solve_grid
 from .http import error_response, json_response
 from .image_processing import process_image
 
@@ -21,6 +22,26 @@ def create_routes(model, trie):
     @bp.get("/api/documents")
     def documents():
         return json_response({"documents": []}, status=200)
+
+    @bp.post("/solve-grid")
+    def solve_grid_endpoint():
+        payload = request.get_json(silent=True)
+        if payload is None:
+            return error_response(
+                code="bad_request",
+                message="Request body must be valid JSON",
+                status=400,
+            )
+
+        try:
+            result = solve_grid(payload, trie=trie)
+        except GridValidationError as e:
+            return error_response(code="bad_request", message=str(e), status=400)
+        except Exception:
+            logger.exception("solve_grid failed")
+            return error_response(code="internal_error", message="Grid solving failed", status=500)
+
+        return json_response(result, status=200)
 
     @bp.post("/upload")
     def upload_file():

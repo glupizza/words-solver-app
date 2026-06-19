@@ -130,3 +130,30 @@ def test_find_words_word_multiplier_c2_applies():
 
     # "дом" base: 1+2+3=6, c2 => 12
     assert found["\u0434\u043e\u043c"] == 12
+
+
+def test_find_words_uses_rectangular_board_size():
+    words = ["\u043a\u043e\u0442"]  # кот
+    trie = build_trie(words)
+
+    board = [
+        [("\u043a", None), ("\u043e", None), ("\u0442", None)],
+        [("\u0430", None), ("\u0430", None), ("\u0430", None)],
+    ]
+
+    found = find_words(board, trie=trie)
+    assert "\u043a\u043e\u0442" in found
+
+
+def test_find_words_can_return_ordered_path():
+    words = ["\u043a\u043e\u0442"]  # кот
+    trie = build_trie(words)
+
+    board = [
+        [("\u043a", None), ("\u043e", None), ("\u0442", None)],
+        [("\u0430", None), ("\u0430", None), ("\u0430", None)],
+    ]
+
+    found = find_words(board, trie=trie, include_paths=True)
+    assert found["\u043a\u043e\u0442"]["score"] == 6
+    assert found["\u043a\u043e\u0442"]["path"] == [[0, 0], [0, 1], [0, 2]]
