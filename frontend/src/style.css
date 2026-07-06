@@ -1,14 +1,22 @@
 :root {
-  --bg: #0b0f0c;
-  --surface: #141a14;
-  --surface-light: #1b241b;
-  --text: #f3f7f1;
-  --muted: #9aa79a;
-  --accent: #58cc02;
-  --accent-hover: #6fea2a;
-  --border: #263226;
-  --radius: 24px;
-  --cell-size: 44px;
+  --color-primary: #4b6382;
+  --color-secondary: #a4b5c4;
+  --color-bg: #cdd5db;
+  --color-warm: #a68868;
+  --color-surface: #ffffff;
+  --color-text: #243447;
+  --color-muted: #6f7f8c;
+  --color-border: rgba(75, 99, 130, 0.2);
+  --bg: var(--color-bg);
+  --surface: var(--color-surface);
+  --surface-light: #f4f7f9;
+  --text: var(--color-text);
+  --muted: var(--color-muted);
+  --accent: var(--color-primary);
+  --accent-hover: #3f5571;
+  --border: var(--color-border);
+  --radius: 14px;
+  --cell-size: 42px;
 
   color: var(--text);
   background: var(--bg);
@@ -36,9 +44,7 @@ body {
   min-height: 100vh;
   margin: 0;
   background:
-    radial-gradient(circle at 18% 8%, rgba(88, 204, 2, 0.1), transparent 28%),
-    radial-gradient(circle at 92% 20%, rgba(88, 204, 2, 0.07), transparent 30%),
-    linear-gradient(180deg, #111811 0%, var(--bg) 48%);
+    linear-gradient(180deg, #e6ebef 0%, var(--bg) 42%, #c3cdd5 100%);
 }
 
 button,
@@ -63,6 +69,6 @@ select {
 }
 
 ::selection {
-  color: #071006;
+  color: #ffffff;
   background: var(--accent);
 }

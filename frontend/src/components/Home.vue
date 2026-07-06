@@ -34,10 +34,6 @@
           <span>Выбрать файл</span>
         </label>
 
-        <p class="file-name">
-          {{ selectedImage ? selectedImage.name : 'Файл не выбран' }}
-        </p>
-
         <button class="primary-button" @click="uploadImage" :disabled="!selectedImage || loading">
           {{ loading ? 'Обработка...' : 'Найти слова' }}
         </button>
@@ -331,28 +327,26 @@ export default {
 
 <style scoped>
 .home {
-  width: min(1180px, 100%);
+  width: min(1120px, 100%);
   margin: 0 auto;
-  padding: 24px 18px 40px;
+  padding: 16px 16px 28px;
 }
 
 .hero-card,
 .card {
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background:
-    linear-gradient(135deg, rgba(88, 204, 2, 0.08), transparent 34%),
-    var(--surface);
-  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.35);
+  background: var(--surface);
+  box-shadow: 0 14px 36px rgba(36, 52, 71, 0.12);
 }
 
 .hero-card {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 24px;
-  padding: 18px 22px;
-  margin-bottom: 16px;
+  gap: 16px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
 }
 
 .hero-copy,
@@ -361,11 +355,11 @@ export default {
 }
 
 .eyebrow {
-  margin: 0 0 8px;
+  margin: 0;
   color: var(--accent);
-  font-size: 0.78rem;
+  font-size: 0.8rem;
   font-weight: 800;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
@@ -377,60 +371,57 @@ p {
 h2 {
   margin-bottom: 0;
   color: var(--text);
-  font-size: 1.25rem;
-}
-
-.section-header p,
-.file-name {
-  color: var(--muted);
+  font-size: 1.08rem;
 }
 
 .mode-switch {
   display: inline-flex;
   flex: 0 0 auto;
-  gap: 6px;
-  padding: 6px;
+  gap: 4px;
+  padding: 4px;
   border: 1px solid var(--border);
-  border-radius: 999px;
+  border-radius: 12px;
   background: var(--surface-light);
 }
 
 .mode-switch button {
-  min-width: 150px;
-  padding: 12px 18px;
+  min-width: 136px;
+  min-height: 34px;
+  padding: 7px 14px;
   border: 1px solid transparent;
-  border-radius: 999px;
+  border-radius: 9px;
   color: var(--muted);
   background: transparent;
-  font-weight: 800;
+  font-size: 0.94rem;
+  font-weight: 750;
   cursor: pointer;
   transition: color 0.2s ease, background 0.2s ease, border-color 0.2s ease;
 }
 
 .mode-switch button:hover {
   color: var(--text);
-  border-color: rgba(88, 204, 2, 0.35);
+  border-color: rgba(75, 99, 130, 0.3);
 }
 
 .mode-switch button.active {
-  color: #071006;
+  color: #ffffff;
   background: var(--accent);
-  box-shadow: 0 0 28px rgba(88, 204, 2, 0.28);
+  box-shadow: 0 6px 18px rgba(75, 99, 130, 0.2);
 }
 
 .workspace {
   display: grid;
-  grid-template-columns: minmax(0, 1.05fr) minmax(320px, 0.95fr);
-  gap: 16px;
+  grid-template-columns: minmax(0, 0.95fr) minmax(340px, 1.05fr);
+  gap: 12px;
   align-items: start;
 }
 
 .card {
-  padding: 20px;
+  padding: 14px;
 }
 
 .section-header {
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .mode-panel {
@@ -438,24 +429,23 @@ h2 {
 }
 
 .file-picker {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-height: 118px;
-  margin-bottom: 12px;
-  border: 1px dashed rgba(88, 204, 2, 0.45);
-  border-radius: calc(var(--radius) - 6px);
-  color: var(--text);
-  background:
-    radial-gradient(circle at 50% 0%, rgba(88, 204, 2, 0.14), transparent 38%),
-    var(--surface-light);
+  width: auto;
+  min-height: 38px;
+  margin-bottom: 10px;
+  border: 1px dashed rgba(75, 99, 130, 0.35);
+  border-radius: 10px;
+  color: var(--accent);
+  background: var(--surface-light);
   cursor: pointer;
-  transition: border-color 0.2s ease, transform 0.2s ease, background 0.2s ease;
+  transition: border-color 0.2s ease, background 0.2s ease;
 }
 
 .file-picker:hover {
   border-color: var(--accent);
-  transform: translateY(-1px);
+  background: #eef3f6;
 }
 
 .file-picker input {
@@ -470,24 +460,19 @@ h2 {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  padding: 12px 18px;
-  border: 1px solid rgba(88, 204, 2, 0.65);
-  border-radius: 12px;
+  padding: 8px 13px;
+  border: 0;
+  border-radius: 9px;
   color: var(--accent);
-  background: rgba(88, 204, 2, 0.08);
+  background: transparent;
+  font-size: 0.92rem;
   font-weight: 800;
-}
-
-.file-name {
-  min-height: 24px;
-  margin-bottom: 18px;
-  word-break: break-word;
 }
 
 .grid-size-controls {
   display: flex;
-  gap: 12px;
-  margin-bottom: 20px;
+  gap: 10px;
+  margin-bottom: 14px;
 }
 
 .grid-size-controls label {
@@ -495,17 +480,17 @@ h2 {
   flex: 1;
   flex-direction: column;
   align-items: flex-start;
-  gap: 8px;
+  gap: 6px;
   color: var(--muted);
-  font-size: 0.92rem;
+  font-size: 0.9rem;
   font-weight: 700;
 }
 
 .grid-size-controls select {
   width: 100%;
-  padding: 11px 12px;
+  padding: 8px 10px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 9px;
   color: var(--text);
   background: var(--surface-light);
   font: inherit;
@@ -515,14 +500,14 @@ h2 {
 .grid-size-controls select:focus {
   border-color: var(--accent);
   outline: none;
-  box-shadow: 0 0 0 3px rgba(88, 204, 2, 0.12);
+  box-shadow: 0 0 0 3px rgba(75, 99, 130, 0.14);
 }
 
 .grid-wrap {
   max-width: 100%;
-  margin-bottom: 20px;
+  margin-bottom: 14px;
   overflow-x: auto;
-  padding: 4px 2px 10px;
+  padding: 2px 2px 8px;
 }
 
 .manual-grid {
@@ -530,7 +515,7 @@ h2 {
   width: max-content;
   max-width: 100%;
   justify-content: start;
-  gap: 8px;
+  gap: 7px;
 }
 
 .manual-grid input {
@@ -538,10 +523,10 @@ h2 {
   height: var(--cell-size);
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 9px;
   color: var(--text);
   background: var(--surface-light);
-  font-size: 1.4rem;
+  font-size: 1.28rem;
   font-weight: 900;
   text-align: center;
   text-transform: lowercase;
@@ -550,13 +535,13 @@ h2 {
 }
 
 .manual-grid input:hover {
-  border-color: rgba(88, 204, 2, 0.55);
+  border-color: rgba(75, 99, 130, 0.48);
 }
 
 .manual-grid input:focus {
   border-color: var(--accent);
   outline: none;
-  box-shadow: 0 0 0 3px rgba(88, 204, 2, 0.18), 0 0 18px rgba(88, 204, 2, 0.18);
+  box-shadow: 0 0 0 3px rgba(75, 99, 130, 0.18);
   transform: translateY(-1px);
 }
 
@@ -565,13 +550,13 @@ h2 {
   align-items: center;
   justify-content: center;
   width: 100%;
-  min-height: 48px;
-  padding: 12px 18px;
+  min-height: 40px;
+  padding: 9px 16px;
   border: 1px solid transparent;
-  border-radius: 14px;
-  color: #071006;
+  border-radius: 10px;
+  color: #ffffff;
   background: var(--accent);
-  font-size: 1rem;
+  font-size: 0.96rem;
   font-weight: 900;
   cursor: pointer;
   transition: background 0.2s ease, box-shadow 0.2s ease, transform 0.2s ease, opacity 0.2s ease;
@@ -579,7 +564,7 @@ h2 {
 
 .primary-button:hover:not(:disabled) {
   background: var(--accent-hover);
-  box-shadow: 0 12px 34px rgba(88, 204, 2, 0.24);
+  box-shadow: 0 10px 24px rgba(75, 99, 130, 0.22);
   transform: translateY(-1px);
 }
 
@@ -591,17 +576,17 @@ h2 {
 button:focus-visible,
 .file-picker:focus-within {
   outline: none;
-  box-shadow: 0 0 0 3px rgba(88, 204, 2, 0.2);
+  box-shadow: 0 0 0 3px rgba(75, 99, 130, 0.18);
 }
 
 .status {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 14px;
-  padding: 12px;
+  margin-bottom: 12px;
+  padding: 10px;
   border: 1px solid var(--border);
-  border-radius: 12px;
+  border-radius: 10px;
   color: var(--text);
   background: var(--surface-light);
 }
@@ -609,7 +594,7 @@ button:focus-visible,
 .loader {
   width: 16px;
   height: 16px;
-  border: 2px solid rgba(88, 204, 2, 0.25);
+  border: 2px solid rgba(75, 99, 130, 0.22);
   border-top-color: var(--accent);
   border-radius: 50%;
   animation: spin 0.8s linear infinite;
@@ -617,11 +602,11 @@ button:focus-visible,
 
 .notice,
 .empty {
-  padding: 14px;
-  border: 1px solid rgba(88, 204, 2, 0.35);
-  border-radius: 12px;
+  padding: 12px;
+  border: 1px solid rgba(166, 136, 104, 0.32);
+  border-radius: 10px;
   color: var(--text);
-  background: rgba(88, 204, 2, 0.08);
+  background: rgba(166, 136, 104, 0.08);
 }
 
 .empty {
@@ -629,7 +614,7 @@ button:focus-visible,
 }
 
 .word-list {
-  max-height: 560px;
+  max-height: min(62vh, 620px);
   margin: 0;
   padding: 0;
   overflow-y: auto;
@@ -641,7 +626,7 @@ button:focus-visible,
   align-items: center;
   justify-content: space-between;
   gap: 12px;
-  padding: 8px 0;
+  padding: 9px 0;
   border-bottom: 1px solid var(--border);
 }
 
@@ -659,7 +644,7 @@ button:focus-visible,
 }
 
 .score {
-  color: var(--accent);
+  color: var(--color-warm);
   font-size: 0.95rem;
   font-weight: 800;
   white-space: nowrap;
@@ -679,6 +664,7 @@ button:focus-visible,
   .hero-card {
     align-items: stretch;
     flex-direction: column;
+    gap: 10px;
   }
 
   .mode-switch {
@@ -694,26 +680,27 @@ button:focus-visible,
 @media (max-width: 560px) {
   .home {
     --cell-size: 36px;
-    padding: 12px 10px 28px;
+    padding: 10px 10px 24px;
   }
 
   .hero-card,
   .card {
-    padding: 14px;
+    padding: 12px;
   }
 
   .hero-card {
-    gap: 12px;
-    margin-bottom: 12px;
+    margin-bottom: 10px;
   }
 
   .mode-switch {
-    flex-direction: column;
-    border-radius: 18px;
+    border-radius: 12px;
   }
 
   .mode-switch button {
-    border-radius: 13px;
+    min-width: 0;
+    padding-right: 8px;
+    padding-left: 8px;
+    border-radius: 9px;
   }
 
   .grid-size-controls {
