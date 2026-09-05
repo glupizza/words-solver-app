@@ -215,6 +215,90 @@ def adjust_bbox_multiple_of_5(bbox: BBox, img_w: int, img_h: int) -> BBox:
     return BBox(x0, y0, x1, y1).clamp(img_w, img_h)
 
 
+def cluster_axis_centers(values: Sequence[float], tile_size: float) -> Optional[List[float]]:
+    """Return the five grid-line centers represented by detected tile centers."""
+    if tile_size <= 0 or not values:
+        return None
+
+    # Centers from one row/column are close together; adjacent cells are at
+    # least roughly one tile wide apart.  This deliberately only supports 5x5.
+    tolerance = max(3.0, tile_size * 0.45)
+    groups: List[List[float]] = []
+    for value in sorted(values):
+        if not groups or value - groups[-1][-1] > tolerance:
+            groups.append([value])
+        else:
+            groups[-1].append(value)
+
+    if len(groups) != 5:
+        return None
+
+    centers = [float(np.median(group)) for group in groups]
+    if any(right <= left for left, right in zip(centers, centers[1:])):
+        return None
+    return centers
+
+
+def estimate_grid_centers(rects: Sequence[Rect]) -> Optional[Tuple[List[float], List[float]]]:
+    """Estimate fixed 5x5 column and row centers from tile rectangles."""
+    if not rects:
+        return None
+
+    median_w = float(np.median([r.w for r in rects]))
+    median_h = float(np.median([r.h for r in rects]))
+    xs = cluster_axis_centers([r.cx for r in rects], median_w)
+    ys = cluster_axis_centers([r.cy for r in rects], median_h)
+    if xs is None or ys is None:
+        return None
+    return xs, ys
+
+
+def _valid_pitch(centers: Sequence[float], tile_size: float) -> Optional[float]:
+    gaps = np.diff(np.asarray(centers, dtype=np.float32))
+    if len(gaps) != 4 or np.any(gaps <= 0):
+        return None
+
+    pitch = float(np.median(gaps))
+    # Grid pitch should be near the detected tile size, and individual gaps
+    # should not indicate a missing logical row/column.
+    if pitch < tile_size * 0.85 or pitch > tile_size * 1.65:
+        return None
+    if float(np.max(np.abs(gaps - pitch))) > pitch * 0.18:
+        return None
+    return pitch
+
+
+def bbox_from_grid_geometry(
+    rects: Sequence[Rect], img_w: int, img_h: int
+) -> Optional[Tuple[BBox, float, float]]:
+    """Reconstruct logical 5x5 cell boundaries from tile-center geometry."""
+    centers = estimate_grid_centers(rects)
+    if centers is None:
+        return None
+
+    xs, ys = centers
+    pitch_x = _valid_pitch(xs, float(np.median([r.w for r in rects])))
+    pitch_y = _valid_pitch(ys, float(np.median([r.h for r in rects])))
+    if pitch_x is None or pitch_y is None:
+        return None
+
+    cell_w = int(round(pitch_x))
+    cell_h = int(round(pitch_y))
+    board_w = 5 * cell_w
+    board_h = 5 * cell_h
+    if cell_w <= 0 or cell_h <= 0 or board_w > img_w or board_h > img_h:
+        return None
+
+    x0 = int(round(xs[0] - pitch_x / 2.0))
+    y0 = int(round(ys[0] - pitch_y / 2.0))
+    # Preserve the recovered integer cell pitch when the board is near an
+    # image edge; clamping either endpoint would distort the 5x5 split.
+    x0 = max(0, min(x0, img_w - board_w))
+    y0 = max(0, min(y0, img_h - board_h))
+    bbox = BBox(x0, y0, x0 + board_w, y0 + board_h)
+    return bbox, pitch_x, pitch_y
+
+
 def find_board_bbox(
     img_bgr: np.ndarray,
     *,
@@ -261,6 +345,7 @@ def find_board_bbox(
         "candidates": float(len(candidates)),
         "cluster": float(len(cluster)),
         "tile_size": float(tile_size),
+        "geometry_used": 0.0,
     }
 
     if len(cluster) < min_tiles:
@@ -272,14 +357,19 @@ def find_board_bbox(
             cluster if debug else [],
         )
 
-    bbox = bbox_from_rects(cluster).clamp(w, h)
+    geometry = bbox_from_grid_geometry(cluster, img_w=w, img_h=h)
+    if geometry is not None:
+        bbox, pitch_x, pitch_y = geometry
+        info.update({"geometry_used": 1.0, "pitch_x": pitch_x, "pitch_y": pitch_y})
+    else:
+        bbox = bbox_from_rects(cluster).clamp(w, h)
 
-    # Small pad to avoid shaving off tile borders/corners.
-    pad = int(round(tile_size * pad_frac))
-    if pad > 0:
-        bbox = BBox(bbox.x0 - pad, bbox.y0 - pad, bbox.x1 + pad, bbox.y1 + pad).clamp(w, h)
+        # Small pad to avoid shaving off tile borders/corners.
+        pad = int(round(tile_size * pad_frac))
+        if pad > 0:
+            bbox = BBox(bbox.x0 - pad, bbox.y0 - pad, bbox.x1 + pad, bbox.y1 + pad).clamp(w, h)
 
-    bbox = adjust_bbox_multiple_of_5(bbox, img_w=w, img_h=h)
+        bbox = adjust_bbox_multiple_of_5(bbox, img_w=w, img_h=h)
 
     if not debug:
         return bbox, info, None, [], []
