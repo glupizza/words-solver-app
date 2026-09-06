@@ -1,0 +1,292 @@
+import bz2
+import gzip
+import json
+
+from backend.tools.build_dictionary_candidates import CandidateBuilder, normalize_word
+
+
+def test_normalize_word() -> None:
+    assert normalize_word("Ёл\u0301КА") == "елка"
+    assert normalize_word("край") == "край"
+    assert normalize_word("кра\u0301й") == "край"
+    assert normalize_word("  слово") is None
+    assert normalize_word("два слова") is None
+    assert normalize_word("как-то") is None
+    assert normalize_word("а") is None
+    assert normalize_word("а" * 25) == "а" * 25
+    assert normalize_word("а" * 26) is None
+
+
+def test_normalization_collisions_are_incremental() -> None:
+    builder = CandidateBuilder()
+    builder.add("ёж", "legacy")
+    builder.add("еж", "legacy")
+    builder.add("еж", "legacy")
+    assert builder.stats["normalization_collisions"] == 1
+
+
+def test_opencorpora_extracts_only_game_forms(tmp_path) -> None:
+    xml = """<dictionary><lemmata>
+    <lemma><l t="кот"><g v="NOUN"/><g v="masc"/></l><f t="кот"><g v="sing"/><g v="nomn"/></f><f t="коты"><g v="plur"/><g v="nomn"/></f></lemma>
+    <lemma><l t="ножницы"><g v="NOUN"/><g v="Pltm"/></l><f t="ножницы"><g v="plur"/><g v="nomn"/></f></lemma>
+    <lemma><l t="читать"><g v="INFN"/><g v="impf"/></l><f t="читать"><g v="INFN"/></f><f t="читаю"><g v="VERB"/><g v="pres"/><g v="sing"/><g v="1per"/></f><f t="читал"><g v="VERB"/><g v="past"/><g v="sing"/><g v="masc"/></f><f t="читай"><g v="VERB"/><g v="impr"/><g v="sing"/></f></lemma>
+    <lemma><l t="красный"><g v="ADJF"/></l><f t="красный"><g v="masc"/><g v="sing"/><g v="nomn"/></f><f t="красен"><g v="ADJS"/><g v="masc"/><g v="sing"/><g v="nomn"/></f></lemma>
+    <lemma><l t="написанный"><g v="PRTF"/></l><f t="написанный"><g v="masc"/><g v="sing"/><g v="nomn"/></f></lemma>
+    <lemma><l t="быстро"><g v="ADVB"/></l></lemma>
+    <lemma><l t="читаю"><g v="VERB"/></l></lemma>
+    <lemma><l t="читая"><g v="GRND"/></l></lemma>
+    </lemmata></dictionary>"""
+    source = tmp_path / "dict.xml.bz2"
+    source.write_bytes(bz2.compress(xml.encode()))
+    builder = CandidateBuilder()
+    builder.add_opencorpora(source)
+    assert {"кот", "ножницы", "читать", "красный", "написанный", "быстро"} <= set(
+        builder.candidates
+    )
+    assert "коты" not in builder.candidates
+    assert "красен" not in builder.candidates
+    assert "читаю" not in builder.candidates
+    assert "читал" not in builder.candidates
+    assert "читай" not in builder.candidates
+    assert "читая" not in builder.candidates
+    assert builder.candidates["читать"].kinds == {"INFN"}
+    assert all(
+        all(grammar not in evidence for grammar in ("pres", "past", "impr", "verb"))
+        for evidence in builder.candidates["читать"].evidence
+    )
+
+
+def _write_wiktionary(path, entries) -> None:
+    with gzip.open(path, "wt", encoding="utf-8") as stream:
+        for entry in entries:
+            stream.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def test_wiktionary_verb_forms_extract_real_participle(tmp_path) -> None:
+    source = tmp_path / "ru.jsonl.gz"
+    _write_wiktionary(
+        source,
+        [
+            {
+                "word": "перепрограммировать",
+                "lang_code": "ru",
+                "pos": "verb",
+                "forms": [
+                    {
+                        "form": "перепрограммированный",
+                        "tags": [
+                            "participle",
+                            "passive",
+                            "past",
+                            "singular",
+                            "masculine",
+                            "nominative",
+                        ],
+                    },
+                    {"form": "перепрограммирую", "tags": ["first-person", "singular"]},
+                    {"form": "перепрограммировав", "tags": ["gerund"]},
+                ],
+            }
+        ],
+    )
+    builder = CandidateBuilder()
+    builder.add_wiktionary(source)
+    assert {"перепрограммировать", "перепрограммированный"} <= set(builder.candidates)
+    assert "перепрограммирую" not in builder.candidates
+    assert "перепрограммировав" not in builder.candidates
+
+
+def test_standalone_participle(tmp_path) -> None:
+    source = tmp_path / "ru.jsonl.gz"
+    _write_wiktionary(
+        source,
+        [
+            {
+                "word": "написанный",
+                "lang_code": "ru",
+                "pos": "verb",
+                "tags": ["participle"],
+                "forms": [
+                    {
+                        "form": "написанный",
+                        "tags": ["participle", "masculine", "singular", "nominative"],
+                    }
+                ],
+            }
+        ],
+    )
+    builder = CandidateBuilder()
+    builder.add_wiktionary(source)
+    assert builder.candidates["написанный"].kinds == {"PRTF"}
+
+
+def test_wiktionary_standalone_canonical_participle_without_forms(tmp_path) -> None:
+    source = tmp_path / "ru.jsonl.gz"
+    _write_wiktionary(
+        source,
+        [
+            {
+                "word": "отрёпанный",
+                "lang_code": "ru",
+                "pos": "verb",
+                "tags": ["participle"],
+                "senses": [
+                    {
+                        "tags": ["participle"],
+                        "glosses": ["страд. прич. прош. вр. от отрепать"],
+                    }
+                ],
+            },
+            {
+                "word": "отрёпанная",
+                "lang_code": "ru",
+                "pos": "verb",
+                "tags": ["participle"],
+                "senses": [
+                    {
+                        "tags": ["form-of", "participle"],
+                        "form_of": [{"word": "отрёпанный"}],
+                    }
+                ],
+            },
+        ],
+    )
+    builder = CandidateBuilder()
+    builder.add_wiktionary(source)
+    assert builder.candidates["отрепанный"].kinds == {"PRTF"}
+    assert "отрепанная" not in builder.candidates
+
+
+def test_wiktionary_form_of_entries_do_not_become_lemmas(tmp_path) -> None:
+    source = tmp_path / "ru.jsonl.gz"
+    _write_wiktionary(
+        source,
+        [
+            {
+                "word": "уходил",
+                "lang_code": "ru",
+                "pos": "verb",
+                "senses": [{"form_of": [{"word": "уходить"}], "tags": ["form-of"]}],
+            },
+            {
+                "word": "котам",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [
+                    {
+                        "form_of": [{"word": "кот"}],
+                        "tags": ["form-of", "dative", "plural"],
+                    }
+                ],
+            },
+            {"word": "уходить", "lang_code": "ru", "pos": "verb", "senses": [{}]},
+            {"word": "кот", "lang_code": "ru", "pos": "noun", "senses": [{}]},
+        ],
+    )
+    builder = CandidateBuilder()
+    builder.add_wiktionary(source)
+    assert "уходил" not in builder.candidates
+    assert "котам" not in builder.candidates
+    assert builder.candidates["уходить"].kinds == {"INFN"}
+    assert builder.candidates["кот"].kinds == {"NOUN"}
+
+
+def test_wiktionary_russian_proper_name_category_is_rejected(tmp_path) -> None:
+    source = tmp_path / "ru.jsonl.gz"
+    _write_wiktionary(
+        source,
+        [
+            {
+                "word": "Ваня",
+                "lang_code": "ru",
+                "pos": "noun",
+                "categories": ["Имена собственные/ru", "Мужские имена/ru"],
+                "senses": [{}],
+            }
+        ],
+    )
+    builder = CandidateBuilder()
+    builder.add_wiktionary(source)
+    builder.classify()
+    assert builder.status(builder.candidates["ваня"]) == "REJECT"
+    assert "proper_name" in builder.candidates["ваня"].reasons
+
+
+def test_clean_and_proper_homonym_is_reviewed_as_conflicting(tmp_path) -> None:
+    source = tmp_path / "ru.jsonl.gz"
+    _write_wiktionary(
+        source,
+        [
+            {"word": "лев", "lang_code": "ru", "pos": "noun", "senses": [{}]},
+            {
+                "word": "лев",
+                "lang_code": "ru",
+                "pos": "noun",
+                "categories": ["Имена собственные/ru"],
+                "senses": [{}],
+            },
+        ],
+    )
+    builder = CandidateBuilder()
+    builder.add_wiktionary(source)
+    builder.classify()
+    assert builder.status(builder.candidates["лев"]) == "REVIEW"
+    assert builder.candidates["лев"].reasons == {"conflicting_source_metadata"}
+
+
+def test_diminutive_classification(tmp_path) -> None:
+    source = tmp_path / "ru.jsonl.gz"
+    _write_wiktionary(
+        source,
+        [
+            {
+                "word": "сборчик",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["уменьш.-ласк. к сбор"]}],
+            },
+            {
+                "word": "ключик",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [
+                    {"glosses": ["уменьш. к ключ"]},
+                    {"glosses": ["самостоятельное техническое значение"]},
+                ],
+            },
+        ],
+    )
+    builder = CandidateBuilder()
+    builder.add_wiktionary(source)
+    builder.classify()
+    assert builder.status(builder.candidates["сборчик"]) == "REJECT"
+    assert "diminutive_only" in builder.candidates["сборчик"].reasons
+    assert builder.status(builder.candidates["ключик"]) == "REVIEW"
+    assert "diminutive_independent_sense" in builder.candidates["ключик"].reasons
+
+
+def test_legacy_only_and_merge_evidence(tmp_path) -> None:
+    legacy = tmp_path / "legacy.json"
+    legacy.write_text(json.dumps(["старое", "кот"], ensure_ascii=False), encoding="utf-8")
+    source = tmp_path / "ru.jsonl.gz"
+    _write_wiktionary(source, [{"word": "кот", "lang_code": "ru", "pos": "noun"}])
+    builder = CandidateBuilder()
+    builder.add_legacy(legacy)
+    builder.add_wiktionary(source)
+    builder.classify()
+    assert builder.status(builder.candidates["старое"]) == "REVIEW"
+    assert builder.candidates["старое"].reasons == {"legacy_only"}
+    assert builder.candidates["кот"].sources == {"legacy", "wiktionary"}
+    assert builder.status(builder.candidates["кот"]) == "ACCEPT"
+    summary = builder.write_outputs(tmp_path / "report")
+    assert summary["new_vs_legacy"] == 0
+    assert {
+        "summary.json",
+        "accepted.json",
+        "review.csv",
+        "rejected.csv",
+        "long_additions.csv",
+    } == {path.name for path in (tmp_path / "report").iterdir()}
+    review_header = (tmp_path / "report" / "review.csv").read_text(encoding="utf-8").splitlines()[0]
+    assert "source_forms" in review_header
+    assert "evidence" in review_header
