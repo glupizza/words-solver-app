@@ -388,6 +388,162 @@ def test_wiktionary_capitalized_proper_and_pronominal_metadata(tmp_path) -> None
         assert "proper_derived" in builder.candidates[word].reasons
 
 
+def test_proper_derived_requires_a_concrete_capitalized_target(tmp_path) -> None:
+    source = tmp_path / "ru.jsonl.gz"
+    _write_wiktionary(
+        source,
+        [
+            {
+                "word": "нарратор",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["лицо, от имени которого ведётся повествование"]}],
+            },
+            {
+                "word": "деноминатив",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["слово, образованное от имени существительного"]}],
+            },
+            {
+                "word": "врез",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["сообщение от имени редакции"]}],
+            },
+            {
+                "word": "гатчинский",
+                "lang_code": "ru",
+                "pos": "adjective",
+                "senses": [{"glosses": ["связанный по значению с существительным Гатчина"]}],
+            },
+            {
+                "word": "боровичанка",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["жительница или уроженка города Боровичи"]}],
+            },
+            {
+                "word": "канец",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["этнохороним от Канск"]}],
+            },
+            {
+                "word": "центральноамериканец",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["житель Центральной Америки"]}],
+            },
+        ],
+    )
+    builder = CandidateBuilder()
+    builder.add_wiktionary(source)
+    builder.classify()
+    for word in ("нарратор", "деноминатив", "врез"):
+        assert "proper_derived" not in builder.candidates[word].flags
+        assert builder.status(builder.candidates[word]) == "ACCEPT"
+    for word in ("гатчинский", "боровичанка", "канец", "центральноамериканец"):
+        assert builder.status(builder.candidates[word]) == "REJECT"
+        assert "proper_derived" in builder.candidates[word].reasons
+
+
+def test_compound_labels_and_adjective_forms(tmp_path) -> None:
+    source = tmp_path / "ru.jsonl.gz"
+    _write_wiktionary(
+        source,
+        [
+            {
+                "word": "нормас",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["мол. слово"]}],
+            },
+            {
+                "word": "крипово",
+                "lang_code": "ru",
+                "pos": "adverb",
+                "senses": [{"glosses": ["сленг, слово"]}],
+            },
+            {
+                "word": "криминализм",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["крим.жарг. слово"]}],
+            },
+            {
+                "word": "грубость",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["груб.-прост. слово"]}],
+            },
+            {
+                "word": "химически",
+                "lang_code": "ru",
+                "pos": "adverb",
+                "senses": [{"glosses": ["хим.разг. термин"]}],
+            },
+            {
+                "word": "сибиряк",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["рег. (Сиб.) слово"]}],
+            },
+            {
+                "word": "старина",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["старин. слово"]}],
+            },
+            {
+                "word": "эшелончик",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["ум.-ласк. к эшелон"]}],
+            },
+            {
+                "word": "перепелочка",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["уменьш-ласк. к перепёлка"]}],
+            },
+            {
+                "word": "красивее",
+                "lang_code": "ru",
+                "pos": "adj",
+                "senses": [{"glosses": ["сравн. ст. к прил. красивый"]}],
+            },
+            {
+                "word": "вразумительно",
+                "lang_code": "ru",
+                "pos": "adj",
+                "tags": ["predicative"],
+                "senses": [{"glosses": ["предикатив"]}],
+            },
+            {
+                "word": "вразумительно",
+                "lang_code": "ru",
+                "pos": "adv",
+                "senses": [{"glosses": ["наречие к вразумительный"]}],
+            },
+        ],
+    )
+    builder = CandidateBuilder()
+    builder.add_wiktionary(source)
+    builder.classify()
+    for word in ("нормас", "крипово", "криминализм", "грубость"):
+        assert builder.status(builder.candidates[word]) == "REJECT"
+    assert builder.status(builder.candidates["химически"]) == "REVIEW"
+    assert "colloquial" in builder.candidates["химически"].reasons
+    assert "dialectal" in builder.candidates["сибиряк"].reasons
+    assert "archaic" in builder.candidates["старина"].reasons
+    assert builder.status(builder.candidates["эшелончик"]) == "REJECT"
+    assert builder.status(builder.candidates["перепелочка"]) == "REJECT"
+    assert "красивее" not in builder.candidates
+    assert builder.candidates["вразумительно"].kinds == {"ADVB"}
+    assert builder.stats["wiktionary_noncanonical_adjective_forms_skipped"] == 2
+
+
 def test_wiktionary_gerund_introductory_and_weak_evidence(tmp_path) -> None:
     source = tmp_path / "ru.jsonl.gz"
     _write_wiktionary(

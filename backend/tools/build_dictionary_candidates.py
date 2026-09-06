@@ -104,28 +104,42 @@ def _has(tags: set[str], *names: str) -> bool:
 
 
 GLOSS_LABELS = {
-    "slang": r"(?:жарг\.|сленг\.)",
-    "vernacular": r"прост\.",
-    "vulgar": r"(?:вульг\.|обсц\.|бран\.)",
+    "slang": r"(?:жарг\.|сленг\.?|мол\.)",
+    "vernacular": r"(?:прост\.|сниж\.)",
+    "vulgar": r"(?:вульг\.|обсц\.|бран\.|груб\.)",
     "abbreviation": r"(?:сокр\.|аббр\.)",
     "colloquial": r"разг\.",
-    "archaic": r"(?:устар\.|арх\.)",
-    "dialectal": r"диал\.",
+    "archaic": r"(?:устар\.|арх\.|старин\.)",
+    "dialectal": r"(?:диал\.|рег\.)",
     "neologism": r"неол\.",
-    "diminutive": r"(?:уменьш\.(?:-ласк\.)?|ласк\.)",
+    "diminutive": r"(?:уменьш\.(?:-ласк\.)?|ум\.-ласк\.?|уменьш-ласк\.?|ласк\.)",
     "gerund": r"дееприч\.",
     "introductory": r"вводн\.\s*сл\.",
 }
-PROPER_DERIVED_RE = re.compile(
-    r"(?:относящийся|связанный)\s+к\s+(?:топониму|городу|названию|человеку\s+с\s+фамилией)"
-    r"|образованн\w*\s+от\s+названия|от\s+(?:фамилии|имени)\b",
-    re.IGNORECASE,
+PROPER_TARGET = r"[А-ЯЁ][а-яё-]*(?:\s+[А-ЯЁ][а-яё-]*)*"
+ADJECTIVE_PROPER_DERIVED_RE = re.compile(
+    rf"(?:связанный|соотносящийся).*?(?:с\s+существительным|с)\s+{PROPER_TARGET}"
+    rf"|относящийся\s+к\s+(?:{PROPER_TARGET}|(?:городу|топониму|селу|деревне|реке|области|краю)\s+{PROPER_TARGET})"
+    rf"|связанный\s+с\s+{PROPER_TARGET}"
+    rf"|(?:человеку\s+с\s+фамилией|от\s+(?:имени|фамилии))\s+{PROPER_TARGET}",
+)
+NOUN_PROPER_DERIVED_RE = re.compile(
+    rf"(?:житель|жительница|уроженец|уроженка)(?:\s+или\s+(?:житель|жительница|уроженец|уроженка))?\s+(?:(?:города|села|деревни|реки|области|края)\s+{PROPER_TARGET}|(?:Северной|Южной|Центральной)\s+Америки)"
+    rf"|этнохороним\s+от\s+{PROPER_TARGET}",
 )
 
 
 def _has_gloss_label(text: str, pattern: str) -> bool:
     """Match an explicit abbreviated lexicographic label, not a word meaning."""
-    return bool(re.search(r"(?:^|[\s,;:(])" + pattern, text.lower()))
+    return bool(re.search(r"(?:^|[\s,;:(.\-])" + pattern, text.lower()))
+
+
+def _is_proper_derived_gloss(pos: str, gloss: str) -> bool:
+    if pos in {"adj", "adjective"}:
+        return bool(ADJECTIVE_PROPER_DERIVED_RE.search(gloss))
+    if pos == "noun":
+        return bool(NOUN_PROPER_DERIVED_RE.search(gloss))
+    return False
 
 
 def _flags_from_metadata(
@@ -186,8 +200,6 @@ def _flags_from_metadata(
     if _has_gloss_label(gloss_text, r"разг\.\s*-\s*сниж\."):
         flags.discard("colloquial")
         flags.add("vernacular")
-    if PROPER_DERIVED_RE.search(gloss_text):
-        flags.add("proper_derived")
     return flags
 
 
@@ -463,6 +475,7 @@ class CandidateBuilder:
             for item in categories
             if isinstance(item, (str, dict))
         )
+        pos = str(entry.get("pos", "")).lower()
         senses = [sense for sense in entry.get("senses", []) if isinstance(sense, dict)]
         sense_flags = []
         glosses = []
@@ -470,10 +483,12 @@ class CandidateBuilder:
             sense_tags = _tag_set(sense.get("tags")) | _tag_set(sense.get("raw_tags"))
             sense_glosses = [str(gloss) for gloss in sense.get("glosses", [])]
             glosses.extend(sense_glosses)
-            sense_flags.append(_flags_from_metadata(sense_tags, gloss_text=" ".join(sense_glosses)))
+            flags_for_sense = _flags_from_metadata(sense_tags, gloss_text=" ".join(sense_glosses))
+            if _is_proper_derived_gloss(pos, " ".join(sense_glosses)):
+                flags_for_sense.add("proper_derived")
+            sense_flags.append(flags_for_sense)
         entry_flags = _flags_from_metadata(tags, category_text)
         flags = entry_flags | set().union(*sense_flags)
-        pos = str(entry.get("pos", "")).lower()
         evidence = (
             f"wiktionary:line={line_number};pos={pos};tags={','.join(sorted(tags))};"
             f"gloss={_compact(glosses, limit=240)}"
@@ -521,13 +536,26 @@ class CandidateBuilder:
             support = "clean"
 
         non_lemma_form = is_form_of_entry(entry)
+        noncanonical_adjective = pos in {"adj", "adjective"} and (
+            "predicative" in tags
+            or any(
+                re.search(
+                    r"сравн\.\s*ст\.\s*к\s*прил\.|сравнительная\s+степень\s+(?:от\s+)?прилагательного",
+                    gloss,
+                    re.IGNORECASE,
+                )
+                for gloss in glosses
+            )
+        )
         is_gerund = _has(tags, "gerund", "adverbial participle")
         is_participle = (
             not is_gerund
             and pos in {"verb", "verbal"}
             and ("participle" in tags or "причаст" in " ".join(tags))
         )
-        if non_lemma_form or is_gerund:
+        if non_lemma_form or is_gerund or noncanonical_adjective:
+            if noncanonical_adjective:
+                self.stats["wiktionary_noncanonical_adjective_forms_skipped"] += 1
             return
         if is_participle:
             self._add_wiktionary_participle(
