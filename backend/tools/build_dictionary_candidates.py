@@ -120,7 +120,11 @@ GLOSS_LABELS = {
 CYRILLIC_PROPER_TOKEN = r"[А-ЯЁ][А-ЯЁа-яё]*(?:-[А-ЯЁа-яё][А-ЯЁа-яё]*)*"
 LATIN_PROPER_TOKEN = r"[A-Z][A-Za-z]*(?:-[A-Za-z][A-Za-z]*)*"
 PROPER_TOKEN = rf"(?:{CYRILLIC_PROPER_TOKEN}|{LATIN_PROPER_TOKEN})"
-PROPER_TARGET = rf"{PROPER_TOKEN}(?:\s+{PROPER_TOKEN})*(?![A-Za-zА-ЯЁа-яё-])"
+PROPER_TARGET_BOUNDARY = r"(?<![0-9A-Za-zА-ЯЁа-яё-])"
+CYRILLIC_PROPER_TARGET = rf"{PROPER_TARGET_BOUNDARY}{CYRILLIC_PROPER_TOKEN}(?:\s+{CYRILLIC_PROPER_TOKEN})*(?![0-9A-Za-zА-ЯЁа-яё-])"
+PROPER_TARGET = (
+    rf"{PROPER_TARGET_BOUNDARY}{PROPER_TOKEN}(?:\s+{PROPER_TOKEN})*(?![0-9A-Za-zА-ЯЁа-яё-])"
+)
 MODIFIED_PROPER_TARGET = rf"(?:(?:(?:древней|восточной|западной)\s+)?{PROPER_TARGET}|(?:восточной|западной)\s+части\s+{PROPER_TARGET})"
 ADJECTIVE_PROPER_DERIVED_RE = re.compile(
     rf"(?:связанный|соотносящийся).*?(?:с\s+существительным|с)\s+{MODIFIED_PROPER_TARGET}"
@@ -129,7 +133,7 @@ ADJECTIVE_PROPER_DERIVED_RE = re.compile(
     rf"|(?:человеку\s+с\s+фамилией|(?:от|по)\s+(?:имени|фамилии))\s+{PROPER_TARGET}",
 )
 NOUN_PROPER_DERIVED_RE = re.compile(
-    rf"(?:житель|жительница|уроженец|уроженка)(?:\s+или\s+(?:житель|жительница|уроженец|уроженка))?\s+(?:{PROPER_TARGET}|(?:города|села|деревни|реки|области|края)\s+{PROPER_TARGET})"
+    rf"(?:житель|жительница|уроженец|уроженка)(?:\s+или\s+(?:житель|жительница|уроженец|уроженка))?\s+(?:[а-яё-]+\s+){{0,5}}{PROPER_TARGET}"
     rf"|этнохороним\s+от\s+{PROPER_TARGET}",
 )
 
@@ -153,8 +157,9 @@ def _is_possible_proper_derived_gloss(pos: str, gloss: str) -> bool:
         return False
     return bool(
         re.search(
-            r"(?:связанный|соотносящийся|относящийся)\s+(?:с|к)\s+"
-            r"(?!(?:изучением|влиянием|исследованием)\b)(?:[а-яё-]+\s+){0,2}" + PROPER_TARGET,
+            r"(?:связанный|соотносящийся|относящийся)[^.;]{0,35}?(?:к|ко|с|со)\s+"
+            r"(?!(?:изучением|влиянием|исследованием)\b)(?:[а-яё-]+\s+){0,3}[«\"]?"
+            + CYRILLIC_PROPER_TARGET,
             gloss,
         )
     )
@@ -222,11 +227,13 @@ def _flags_from_metadata(
     if re.search(r"\b(?:жаргонное|сленговое)\s+(?:слово|название)\b", lower_gloss):
         flags.add("slang")
     if re.search(
-        r"\b(?:уменьшительное\s+от|уменьшительный\s+вариант|уменьшительно-ласкательное\s+от|ласкательное\s+(?:обращение|от))",
+        r"\b(?:уменьшительное\s+от|уменьшительный\s+вариант|уменьшительно-ласкательное\s+от|ласкательное\s+(?:и\s+ласковое\s+)?обращение|ласковое\s+обращение|ласкательное\s+от)",
         lower_gloss,
     ):
         flags.add("diminutive")
     if re.search(r"\bсокращ[её]н(?:ное|ная)\s+(?:название|форма)\b", lower_gloss):
+        flags.add("abbreviation")
+    if re.search(r"\bсокращение\s+от\s*:?", lower_gloss):
         flags.add("abbreviation")
     return flags
 
@@ -729,6 +736,29 @@ class CandidateBuilder:
         (output_dir / "accepted.json").write_text(
             json.dumps(accepted_words, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
+        accepted_rows = []
+        for candidate in sorted(grouped["ACCEPT"], key=lambda c: c.word):
+            row = candidate.row()
+            tier, confidence_reasons = self.confidence(candidate)
+            row["confidence_tier"] = tier
+            row["confidence_reasons"] = confidence_reasons
+            accepted_rows.append(row)
+        self._write_csv(
+            output_dir / "accepted.csv",
+            accepted_rows,
+            fields=[
+                "word",
+                "length",
+                "sources",
+                "kinds",
+                "flags",
+                "reasons",
+                "source_forms",
+                "evidence",
+                "confidence_tier",
+                "confidence_reasons",
+            ],
+        )
         for status, filename in (("REVIEW", "review.csv"), ("REJECT", "rejected.csv")):
             self._write_csv(
                 output_dir / filename,
@@ -792,12 +822,47 @@ class CandidateBuilder:
                 "accepted_length_by_source": self._accepted_length_by_source(grouped["ACCEPT"]),
                 "review_reason_counts": self._reason_counts(grouped["REVIEW"]),
                 "reject_reason_counts": self._reason_counts(grouped["REJECT"]),
+                "confidence_tier_counts": self._confidence_tier_counts(grouped["ACCEPT"]),
+                "confidence_length_counts": self._confidence_length_counts(grouped["ACCEPT"]),
+                "confidence_by_kind": self._confidence_by_kind(grouped["ACCEPT"]),
             }
         )
         (output_dir / "summary.json").write_text(
             json.dumps(summary, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
         )
         return summary
+
+    @staticmethod
+    def confidence(candidate: Candidate) -> tuple[str, str]:
+        external = {"opencorpora", "wiktionary"}
+        if external <= candidate.sources:
+            return "A_DUAL_EXTERNAL", "opencorpora;wiktionary"
+        if "legacy" in candidate.sources and len(candidate.sources & external) == 1:
+            return "B_LEGACY_CONFIRMED", ";".join(sorted(candidate.sources))
+        if (
+            candidate.sources == {"opencorpora"}
+            and "PRTF" in candidate.kinds
+            and len(candidate.word) >= 12
+        ):
+            return "C_OC_LONG_PARTICIPLE", "opencorpora;PRTF;length>=12"
+        return "D_SINGLE_SOURCE", ";".join(sorted(candidate.sources))
+
+    def _confidence_tier_counts(self, accepted: list[Candidate]) -> dict[str, int]:
+        return dict(Counter(self.confidence(candidate)[0] for candidate in accepted))
+
+    def _confidence_length_counts(self, accepted: list[Candidate]) -> dict[str, dict[str, int]]:
+        return {
+            str(limit): dict(
+                Counter(self.confidence(c)[0] for c in accepted if len(c.word) >= limit)
+            )
+            for limit in (10, 12, 15, 18, 20)
+        }
+
+    def _confidence_by_kind(self, accepted: list[Candidate]) -> dict[str, dict[str, int]]:
+        return {
+            kind: dict(Counter(self.confidence(c)[0] for c in accepted if kind in c.kinds))
+            for kind in sorted(CANONICAL_KINDS)
+        }
 
     @staticmethod
     def _write_csv(

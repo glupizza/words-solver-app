@@ -6,6 +6,7 @@ import re
 from backend.tools.build_dictionary_candidates import (
     PROPER_TARGET,
     CandidateBuilder,
+    _is_possible_proper_derived_gloss,
     _is_proper_derived_gloss,
     normalize_word,
 )
@@ -463,6 +464,13 @@ def test_proper_derived_targets_are_grouped_and_complete() -> None:
     assert _is_proper_derived_gloss("adjective", "относящийся к компании Microsoft")
     for target in ("Санкт-Петербурга", "МГУ", "Ростов-на-Дону", "Microsoft", "New-York"):
         assert re.fullmatch(PROPER_TARGET, target)
+    assert re.search(PROPER_TARGET, "H2O") is None
+    assert re.search(PROPER_TARGET, "C7H7O4N") is None
+    assert not _is_possible_proper_derived_gloss(
+        "adjective", "относящийся к кислоте с формулой C7H7O4N"
+    )
+    assert not _is_possible_proper_derived_gloss("adjective", "относящийся к веществу H2O")
+    assert not _is_proper_derived_gloss("adjective", "связанный с H2O")
 
 
 def test_residual_proper_derived_and_full_lexicographic_phrases(tmp_path) -> None:
@@ -798,6 +806,7 @@ def test_legacy_only_and_merge_evidence(tmp_path) -> None:
     assert {
         "summary.json",
         "accepted.json",
+        "accepted.csv",
         "review.csv",
         "rejected.csv",
         "long_additions.csv",
@@ -805,3 +814,120 @@ def test_legacy_only_and_merge_evidence(tmp_path) -> None:
     review_header = (tmp_path / "report" / "review.csv").read_text(encoding="utf-8").splitlines()[0]
     assert "source_forms" in review_header
     assert "evidence" in review_header
+
+
+def test_final_resident_phrases_and_conflict_semantics(tmp_path) -> None:
+    source = tmp_path / "ru.jsonl.gz"
+    _write_wiktionary(
+        source,
+        [
+            {
+                "word": "базарнокарабулакец",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["житель или уроженец посёлка Базарный Карабулак"]}],
+            },
+            {
+                "word": "висконсинец",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["житель штата Висконсин"]}],
+            },
+            {
+                "word": "барбадосец",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["житель острова Барбадос"]}],
+            },
+            {
+                "word": "пригорожанин",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["истор. житель пригорода (в Древней Руси)"]}],
+            },
+            {
+                "word": "компатриотка",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["уроженка одной с кем-либо страны"]}],
+            },
+            {
+                "word": "лапуля",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["ласковое обращение"]}],
+            },
+            {
+                "word": "механообработка",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["сокращение от: механическая обработка"]}],
+            },
+            {
+                "word": "мышца",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["сокращение мышц"]}],
+            },
+            {
+                "word": "ломоносовский",
+                "lang_code": "ru",
+                "pos": "adjective",
+                "senses": [
+                    {"glosses": ["связанный, соотносящийся по значению с фамилией Ломоносов"]}
+                ],
+            },
+        ],
+    )
+    builder = CandidateBuilder()
+    builder.add_wiktionary(source)
+    builder.add("висконсинец", "opencorpora", "NOUN", canonical_support="clean")
+    builder.classify()
+    for word in ("базарнокарабулакец", "барбадосец", "лапуля", "механообработка"):
+        assert builder.status(builder.candidates[word]) == "REJECT"
+    assert builder.status(builder.candidates["висконсинец"]) == "REVIEW"
+    assert "conflicting_source_metadata" in builder.candidates["висконсинец"].reasons
+    assert "proper_derived" not in builder.candidates["пригорожанин"].flags
+    assert "proper_derived" not in builder.candidates["компатриотка"].flags
+    assert "abbreviation" not in builder.candidates["мышца"].flags
+    assert builder.status(builder.candidates["ломоносовский"]) == "REVIEW"
+    assert "possible_proper_derived" in builder.candidates["ломоносовский"].reasons
+
+
+def test_research_confidence_tiers_and_accepted_csv(tmp_path) -> None:
+    builder = CandidateBuilder()
+    builder.add("двойной", "opencorpora", "ADJF", canonical_support="clean")
+    builder.add(
+        "двойной", "wiktionary", "ADJF", canonical_support="clean", meaningful_wiktionary_gloss=True
+    )
+    builder.add("легаси", "legacy")
+    builder.add(
+        "легаси", "wiktionary", "NOUN", canonical_support="clean", meaningful_wiktionary_gloss=True
+    )
+    builder.add("причастидлинное", "opencorpora", "PRTF", canonical_support="clean")
+    builder.add("одиннадцать", "opencorpora", "PRTF", canonical_support="clean")
+    builder.add(
+        "википричастидлинное",
+        "wiktionary",
+        "PRTF",
+        canonical_support="clean",
+        meaningful_wiktionary_gloss=True,
+    )
+    builder.add(
+        "плохое",
+        "wiktionary",
+        "NOUN",
+        {"slang"},
+        canonical_support="hard_disallowed",
+        meaningful_wiktionary_gloss=True,
+    )
+    summary = builder.write_outputs(tmp_path / "report")
+    assert builder.confidence(builder.candidates["двойной"])[0] == "A_DUAL_EXTERNAL"
+    assert builder.confidence(builder.candidates["легаси"])[0] == "B_LEGACY_CONFIRMED"
+    assert builder.confidence(builder.candidates["причастидлинное"])[0] == "C_OC_LONG_PARTICIPLE"
+    assert builder.confidence(builder.candidates["одиннадцать"])[0] == "D_SINGLE_SOURCE"
+    assert builder.confidence(builder.candidates["википричастидлинное"])[0] == "D_SINGLE_SOURCE"
+    assert "плохое" not in (tmp_path / "report" / "accepted.csv").read_text(encoding="utf-8")
+    assert summary["confidence_tier_counts"]["A_DUAL_EXTERNAL"] == 1
+    header = (tmp_path / "report" / "accepted.csv").read_text(encoding="utf-8").splitlines()[0]
+    assert "confidence_tier" in header and "confidence_reasons" in header
