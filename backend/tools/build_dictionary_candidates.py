@@ -36,18 +36,27 @@ DIAGNOSTIC_WORDS = [
 FAMILY_SUFFIXES = ["ировать", "ироваться", "ирование", "ированный", "ованный", "ывание", "ивание"]
 HARD_FLAGS = {
     "proper_name",
+    "proper_derived",
     "abbreviation",
     "slang",
+    "vernacular",
     "vulgar",
     "foreign",
+    "pronoun",
     "gerund",
+    "typo",
     "diminutive_only",
+    "introductory_only",
 }
 CLASSIFICATION_REASONS = HARD_FLAGS | {
     "archaic",
     "colloquial",
+    "dialectal",
+    "neologism",
     "diminutive_independent_sense",
     "diminutive_metadata_ambiguous",
+    "introductory_with_independent_sense",
+    "weak_wiktionary_evidence",
     "legacy_only",
     "unsupported_or_unknown_form",
     "conflicting_source_metadata",
@@ -94,10 +103,36 @@ def _has(tags: set[str], *names: str) -> bool:
     return any(name in tags for name in names)
 
 
-def _flags_from_metadata(tags: Iterable[str], text: str = "") -> set[str]:
+GLOSS_LABELS = {
+    "slang": r"(?:жарг\.|сленг\.)",
+    "vernacular": r"прост\.",
+    "vulgar": r"(?:вульг\.|обсц\.|бран\.)",
+    "abbreviation": r"(?:сокр\.|аббр\.)",
+    "colloquial": r"разг\.",
+    "archaic": r"(?:устар\.|арх\.)",
+    "dialectal": r"диал\.",
+    "neologism": r"неол\.",
+    "diminutive": r"(?:уменьш\.(?:-ласк\.)?|ласк\.)",
+    "gerund": r"дееприч\.",
+    "introductory": r"вводн\.\s*сл\.",
+}
+PROPER_DERIVED_RE = re.compile(
+    r"(?:относящийся|связанный)\s+к\s+(?:топониму|городу|названию|человеку\s+с\s+фамилией)"
+    r"|образованн\w*\s+от\s+названия|от\s+(?:фамилии|имени)\b",
+    re.IGNORECASE,
+)
+
+
+def _has_gloss_label(text: str, pattern: str) -> bool:
+    """Match an explicit abbreviated lexicographic label, not a word meaning."""
+    return bool(re.search(r"(?:^|[\s,;:(])" + pattern, text.lower()))
+
+
+def _flags_from_metadata(
+    tags: Iterable[str], category_text: str = "", gloss_text: str = ""
+) -> set[str]:
     tag_set = {tag.lower() for tag in tags}
-    joined = text.lower()
-    patterns = {
+    structured = {
         "proper_name": {
             "proper-noun",
             "proper noun",
@@ -108,6 +143,7 @@ def _flags_from_metadata(tags: Iterable[str], text: str = "") -> set[str]:
         },
         "abbreviation": {"abbreviation", "abbr"},
         "slang": {"slang"},
+        "vernacular": {"vernacular", "prostorechie"},
         "colloquial": {"colloquial"},
         "vulgar": {"vulgar"},
         "archaic": {"archaic", "obsolete"},
@@ -115,8 +151,10 @@ def _flags_from_metadata(tags: Iterable[str], text: str = "") -> set[str]:
         "gerund": {"gerund", "adverbial participle"},
         "plural_only": {"plural only", "plurale tantum", "pluralia tantum"},
         "foreign": {"non-russian", "foreign"},
+        "pronoun": {"pronominal", "pronoun"},
+        "typo": {"typo", "misspelling"},
     }
-    text_patterns = {
+    category_patterns = {
         "proper_name": (
             "имена собственные",
             "собственные имена",
@@ -126,20 +164,31 @@ def _flags_from_metadata(tags: Iterable[str], text: str = "") -> set[str]:
             "отчества",
             "топонимы",
         ),
-        "abbreviation": ("сокращ", "аббревиат"),
-        "slang": ("жаргон",),
-        "colloquial": ("разговор",),
-        "vulgar": ("бран", "простореч"),
-        "archaic": ("устар", "архаич"),
-        "diminutive": ("уменьш", "ласкат"),
-        "gerund": ("деепричаст",),
+        "abbreviation": ("аббревиатуры", "сокращения"),
+        "slang": ("жаргон", "сленг"),
+        "vernacular": ("простореч",),
+        "vulgar": ("вульгар", "обсцен", "бранн"),
+        "colloquial": ("разговорные",),
+        "archaic": ("устаревшие", "архаизмы"),
+        "dialectal": ("диалектизмы",),
+        "neologism": ("неологизмы",),
+        "diminutive": ("уменьшительные", "ласкательные"),
     }
-    return {
+    flags = {
         flag
-        for flag in patterns
-        if tag_set & patterns[flag]
-        or any(needle in joined for needle in text_patterns.get(flag, ()))
+        for flag, names in structured.items()
+        if tag_set & names
+        or any(needle in category_text.lower() for needle in category_patterns.get(flag, ()))
     }
+    flags.update(
+        flag for flag, pattern in GLOSS_LABELS.items() if _has_gloss_label(gloss_text, pattern)
+    )
+    if _has_gloss_label(gloss_text, r"разг\.\s*-\s*сниж\."):
+        flags.discard("colloquial")
+        flags.add("vernacular")
+    if PROPER_DERIVED_RE.search(gloss_text):
+        flags.add("proper_derived")
+    return flags
 
 
 def is_form_of_entry(entry: dict[str, Any]) -> bool:
@@ -171,6 +220,9 @@ def _oc_flags(tags: set[str]) -> set[str]:
         "colloquial": {"infr"},
         "archaic": {"arch"},
         "plural_only": {"pltm"},
+        "pronoun": {"apro"},
+        "typo": {"erro"},
+        "introductory_only": {"prnt"},
     }
     return {flag for flag, names in mapping.items() if tags & names}
 
@@ -186,6 +238,7 @@ class Candidate:
     evidence: list[str] = field(default_factory=list)
     clean_canonical_support: bool = False
     hard_disallowed_canonical_support: bool = False
+    wiktionary_meaningful_gloss: bool = False
     invalid: bool = False
 
     def row(self) -> dict[str, str | int]:
@@ -212,6 +265,7 @@ class CandidateBuilder:
             "opencorpora": set(),
             "wiktionary": set(),
         }
+        self.opencorpora_metadata: dict[str, str] = {}
 
     def add(
         self,
@@ -222,6 +276,7 @@ class CandidateBuilder:
         evidence: str = "",
         reasons: Iterable[str] = (),
         canonical_support: str | None = None,
+        meaningful_wiktionary_gloss: bool = False,
     ) -> None:
         plain = cleaned_source_form(raw_word)
         if "ё" in raw_word.lower():
@@ -257,6 +312,8 @@ class CandidateBuilder:
         elif canonical_support == "both":
             candidate.clean_canonical_support = True
             candidate.hard_disallowed_canonical_support = True
+        if source == "wiktionary" and meaningful_wiktionary_gloss:
+            candidate.wiktionary_meaningful_gloss = True
         self.source_words.setdefault(source, set()).add(normalized)
 
     def add_legacy(self, path: Path) -> None:
@@ -275,7 +332,14 @@ class CandidateBuilder:
     def add_opencorpora(self, path: Path) -> None:
         count_before = len(self.source_words["opencorpora"])
         with bz2.open(path, "rb") as stream:
-            for _, elem in ET.iterparse(stream, events=("end",)):
+            for event, elem in ET.iterparse(stream, events=("start", "end")):
+                if event == "start" and elem.tag == "dictionary":
+                    self.opencorpora_metadata = {
+                        key: value for key in ("version", "revision") if (value := elem.get(key))
+                    }
+                    continue
+                if event != "end":
+                    continue
                 if elem.tag != "lemma":
                     continue
                 self._extract_oc_lemma(elem)
@@ -406,8 +470,9 @@ class CandidateBuilder:
             sense_tags = _tag_set(sense.get("tags")) | _tag_set(sense.get("raw_tags"))
             sense_glosses = [str(gloss) for gloss in sense.get("glosses", [])]
             glosses.extend(sense_glosses)
-            sense_flags.append(_flags_from_metadata(sense_tags, " ".join(sense_glosses)))
-        flags = _flags_from_metadata(tags, category_text) | set().union(*sense_flags)
+            sense_flags.append(_flags_from_metadata(sense_tags, gloss_text=" ".join(sense_glosses)))
+        entry_flags = _flags_from_metadata(tags, category_text)
+        flags = entry_flags | set().union(*sense_flags)
         pos = str(entry.get("pos", "")).lower()
         evidence = (
             f"wiktionary:line={line_number};pos={pos};tags={','.join(sorted(tags))};"
@@ -417,17 +482,38 @@ class CandidateBuilder:
         independent_senses = sum(
             bool(" ".join(str(item) for item in sense.get("glosses", [])).strip())
             and "diminutive" not in flags_for_sense
+            and "introductory" not in flags_for_sense
             for sense, flags_for_sense in zip(senses, sense_flags)
         )
-        if diminutive_senses and diminutive_senses == len(senses) and not independent_senses:
+        if (
+            ("diminutive" in entry_flags or diminutive_senses == len(senses))
+            and ("diminutive" in entry_flags or diminutive_senses)
+            and not independent_senses
+        ):
             flags.add("diminutive_only")
         elif diminutive_senses and independent_senses:
             flags.add("diminutive_independent_sense")
+        introductory_senses = sum(
+            "introductory" in flags_for_sense for flags_for_sense in sense_flags
+        )
+        if introductory_senses and introductory_senses == len(senses) and not independent_senses:
+            flags.add("introductory_only")
+        elif introductory_senses and independent_senses:
+            flags.add("introductory_with_independent_sense")
 
-        entry_hard = bool(_flags_from_metadata(tags, category_text) & HARD_FLAGS)
+        if raw_word[:1] in "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ":
+            flags.add("proper_name")
+
+        entry_hard = bool(entry_flags & HARD_FLAGS)
+        entry_hard = entry_hard or raw_word[:1] in "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ"
         hard_sense = any(flags_for_sense & HARD_FLAGS for flags_for_sense in sense_flags)
         clean_sense = any(not (flags_for_sense & HARD_FLAGS) for flags_for_sense in sense_flags)
-        if entry_hard or "diminutive_only" in flags or (hard_sense and not clean_sense):
+        if (
+            entry_hard
+            or "diminutive_only" in flags
+            or "introductory_only" in flags
+            or (hard_sense and not clean_sense)
+        ):
             support = "hard_disallowed"
         elif hard_sense and clean_sense:
             support = "both"
@@ -435,29 +521,70 @@ class CandidateBuilder:
             support = "clean"
 
         non_lemma_form = is_form_of_entry(entry)
-        is_participle = pos in {"verb", "verbal"} and (
-            "participle" in tags or "причаст" in " ".join(tags)
+        is_gerund = _has(tags, "gerund", "adverbial participle")
+        is_participle = (
+            not is_gerund
+            and pos in {"verb", "verbal"}
+            and ("participle" in tags or "причаст" in " ".join(tags))
         )
-        if non_lemma_form:
+        if non_lemma_form or is_gerund:
             return
         if is_participle:
-            self._add_wiktionary_participle(raw_word, tags, flags, evidence, support)
+            self._add_wiktionary_participle(
+                raw_word, tags, flags, evidence, support, bool(_compact(glosses))
+            )
         elif pos == "noun":
-            self.add(raw_word, "wiktionary", "NOUN", flags, evidence, canonical_support=support)
+            self.add(
+                raw_word,
+                "wiktionary",
+                "NOUN",
+                flags,
+                evidence,
+                canonical_support=support,
+                meaningful_wiktionary_gloss=bool(_compact(glosses)),
+            )
         elif pos in {"verb", "verbal"} and not _has(
             tags, "imperative", "finite", "gerund", "adverbial participle"
         ):
-            self.add(raw_word, "wiktionary", "INFN", flags, evidence, canonical_support=support)
+            self.add(
+                raw_word,
+                "wiktionary",
+                "INFN",
+                flags,
+                evidence,
+                canonical_support=support,
+                meaningful_wiktionary_gloss=bool(_compact(glosses)),
+            )
         elif pos in {"adj", "adjective"}:
-            self.add(raw_word, "wiktionary", "ADJF", flags, evidence, canonical_support=support)
+            self.add(
+                raw_word,
+                "wiktionary",
+                "ADJF",
+                flags,
+                evidence,
+                canonical_support=support,
+                meaningful_wiktionary_gloss=bool(_compact(glosses)),
+            )
         elif pos in {"adv", "adverb"}:
-            self.add(raw_word, "wiktionary", "ADVB", flags, evidence, canonical_support=support)
+            self.add(
+                raw_word,
+                "wiktionary",
+                "ADVB",
+                flags,
+                evidence,
+                canonical_support=support,
+                meaningful_wiktionary_gloss=bool(_compact(glosses)),
+            )
 
         for form in entry.get("forms", []):
             if not isinstance(form, dict) or not isinstance(form.get("form"), str):
                 continue
             form_tags = _tag_set(form.get("tags")) | _tag_set(form.get("raw_tags"))
-            if "participle" in form_tags and {"masculine", "singular", "nominative"} <= form_tags:
+            if (
+                "participle" in form_tags
+                and not _has(form_tags, "gerund", "adverbial participle")
+                and {"masculine", "singular", "nominative"} <= form_tags
+            ):
                 self.add(
                     form["form"],
                     "wiktionary",
@@ -465,18 +592,40 @@ class CandidateBuilder:
                     flags,
                     evidence + ";form=participle",
                     canonical_support=support,
+                    meaningful_wiktionary_gloss=bool(_compact(glosses)),
                 )
 
     def _add_wiktionary_participle(
-        self, raw_word: str, tags: set[str], flags: set[str], evidence: str, support: str
+        self,
+        raw_word: str,
+        tags: set[str],
+        flags: set[str],
+        evidence: str,
+        support: str,
+        meaningful_gloss: bool,
     ) -> None:
         # Wiktextract's standalone participle page is its canonical headword;
         # inflected variants are separately marked form-of and are rejected above.
         if normalize_word(raw_word) is not None:
-            self.add(raw_word, "wiktionary", "PRTF", flags, evidence, canonical_support=support)
+            self.add(
+                raw_word,
+                "wiktionary",
+                "PRTF",
+                flags,
+                evidence,
+                canonical_support=support,
+                meaningful_wiktionary_gloss=meaningful_gloss,
+            )
 
     def classify(self) -> None:
-        review = {"archaic", "colloquial", "diminutive_independent_sense"}
+        review = {
+            "archaic",
+            "colloquial",
+            "dialectal",
+            "neologism",
+            "diminutive_independent_sense",
+            "introductory_with_independent_sense",
+        }
         for candidate in self.candidates.values():
             if candidate.invalid:
                 continue
@@ -491,6 +640,8 @@ class CandidateBuilder:
                 candidate.reasons.add("diminutive_metadata_ambiguous")
             elif candidate.sources == {"legacy"}:
                 candidate.reasons.add("legacy_only")
+            elif candidate.sources == {"wiktionary"} and not candidate.wiktionary_meaningful_gloss:
+                candidate.reasons.add("weak_wiktionary_evidence")
             elif not candidate.kinds & CANONICAL_KINDS:
                 candidate.reasons.add("unsupported_or_unknown_form")
 
@@ -575,6 +726,11 @@ class CandidateBuilder:
                 "length_comparison": self._length_comparison(accepted_set),
                 "suffix_comparison": self._suffix_comparison(accepted_set),
                 "presence_table": self._presence_table(),
+                "opencorpora_metadata": self.opencorpora_metadata,
+                "status_by_source": self._status_by_source(grouped),
+                "accepted_by_source": self._accepted_by_source(grouped["ACCEPT"]),
+                "accepted_by_kind": self._accepted_by_kind(grouped["ACCEPT"]),
+                "accepted_length_by_source": self._accepted_length_by_source(grouped["ACCEPT"]),
             }
         )
         (output_dir / "summary.json").write_text(
@@ -621,6 +777,43 @@ class CandidateBuilder:
                 "new_additions": sum(w.endswith(suffix) for w in additions),
             }
             for suffix in FAMILY_SUFFIXES
+        }
+
+    @staticmethod
+    def _status_by_source(grouped: dict[str, list[Candidate]]) -> dict[str, dict[str, int]]:
+        return {
+            source: {
+                status: sum(source in candidate.sources for candidate in grouped[status])
+                for status in ("ACCEPT", "REVIEW", "REJECT")
+            }
+            for source in ("legacy", "opencorpora", "wiktionary")
+        }
+
+    @staticmethod
+    def _accepted_by_source(accepted: list[Candidate]) -> dict[str, int]:
+        return {
+            source: sum(source in candidate.sources for candidate in accepted)
+            for source in ("legacy", "opencorpora", "wiktionary")
+        }
+
+    @staticmethod
+    def _accepted_by_kind(accepted: list[Candidate]) -> dict[str, int]:
+        return {
+            kind: sum(kind in candidate.kinds for candidate in accepted)
+            for kind in sorted(CANONICAL_KINDS)
+        }
+
+    @staticmethod
+    def _accepted_length_by_source(accepted: list[Candidate]) -> dict[str, dict[str, int]]:
+        return {
+            str(limit): {
+                source: sum(
+                    source in candidate.sources and len(candidate.word) >= limit
+                    for candidate in accepted
+                )
+                for source in ("legacy", "opencorpora", "wiktionary")
+            }
+            for limit in (10, 12, 15, 18, 20)
         }
 
     def _presence_table(self) -> dict[str, dict[str, Any]]:

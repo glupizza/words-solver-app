@@ -212,6 +212,246 @@ def test_wiktionary_russian_proper_name_category_is_rejected(tmp_path) -> None:
     assert "proper_name" in builder.candidates["ваня"].reasons
 
 
+def test_wiktionary_gloss_labels_do_not_match_ordinary_words(tmp_path) -> None:
+    source = tmp_path / "ru.jsonl.gz"
+    _write_wiktionary(
+        source,
+        [
+            {
+                "word": "собрание",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["собрание изображений"]}],
+            },
+            {
+                "word": "мембрана",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["мембранный белок"]}],
+            },
+            {
+                "word": "бронхоспазм",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["вызванное сокращением мышц"]}],
+            },
+            {
+                "word": "апокопировать",
+                "lang_code": "ru",
+                "pos": "verb",
+                "senses": [{"glosses": ["сокращать слово в конце"]}],
+            },
+            {
+                "word": "гиповолемия",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["уменьшение объёма крови"]}],
+            },
+            {
+                "word": "дегрессивный",
+                "lang_code": "ru",
+                "pos": "adjective",
+                "senses": [{"glosses": ["нисходящий, уменьшающийся"]}],
+            },
+        ],
+    )
+    builder = CandidateBuilder()
+    builder.add_wiktionary(source)
+    builder.classify()
+    for word in (
+        "собрание",
+        "мембрана",
+        "бронхоспазм",
+        "апокопировать",
+        "гиповолемия",
+        "дегрессивный",
+    ):
+        assert not builder.candidates[word].flags & {"vulgar", "abbreviation", "diminutive"}
+        assert builder.status(builder.candidates[word]) == "ACCEPT"
+
+
+def test_wiktionary_explicit_gloss_labels_are_classified(tmp_path) -> None:
+    source = tmp_path / "ru.jsonl.gz"
+    _write_wiktionary(
+        source,
+        [
+            {
+                "word": "жаргон",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["жарг. слово"]}],
+            },
+            {
+                "word": "просторечие",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["прост. слово"]}],
+            },
+            {
+                "word": "обсценность",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["обсц. слово"]}],
+            },
+            {
+                "word": "аббревиатура",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["сокр. от слова"]}],
+            },
+            {
+                "word": "ласковость",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["ласк. к слову"]}],
+            },
+            {
+                "word": "разговорность",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["разг. слово"]}],
+            },
+        ],
+    )
+    builder = CandidateBuilder()
+    builder.add_wiktionary(source)
+    builder.classify()
+    assert builder.status(builder.candidates["жаргон"]) == "REJECT"
+    assert "slang" in builder.candidates["жаргон"].reasons
+    assert builder.status(builder.candidates["просторечие"]) == "REJECT"
+    assert "vernacular" in builder.candidates["просторечие"].reasons
+    assert builder.status(builder.candidates["обсценность"]) == "REJECT"
+    assert "vulgar" in builder.candidates["обсценность"].reasons
+    assert builder.status(builder.candidates["аббревиатура"]) == "REJECT"
+    assert "abbreviation" in builder.candidates["аббревиатура"].reasons
+    assert builder.status(builder.candidates["ласковость"]) == "REJECT"
+    assert "diminutive_only" in builder.candidates["ласковость"].reasons
+    assert builder.status(builder.candidates["разговорность"]) == "REVIEW"
+    assert "colloquial" in builder.candidates["разговорность"].reasons
+
+
+def test_wiktionary_capitalized_proper_and_pronominal_metadata(tmp_path) -> None:
+    source = tmp_path / "ru.jsonl.gz"
+    _write_wiktionary(
+        source,
+        [
+            {
+                "word": "Верхнеблаговещенское",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["село в России"]}],
+            },
+            {
+                "word": "Лев",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["мужское имя"]}],
+            },
+            {
+                "word": "лев",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["хищное животное"]}],
+            },
+            {
+                "word": "этот",
+                "lang_code": "ru",
+                "pos": "adjective",
+                "tags": ["pronominal"],
+                "senses": [{"glosses": ["указательное слово"]}],
+            },
+            {
+                "word": "байрактаровский",
+                "lang_code": "ru",
+                "pos": "adjective",
+                "senses": [{"glosses": ["относящийся к человеку с фамилией Байрактар"]}],
+            },
+            {
+                "word": "марьинорощинский",
+                "lang_code": "ru",
+                "pos": "adjective",
+                "senses": [{"glosses": ["относящийся к топониму Марьина Роща"]}],
+            },
+        ],
+    )
+    builder = CandidateBuilder()
+    builder.add_wiktionary(source)
+    builder.classify()
+    assert builder.status(builder.candidates["верхнеблаговещенское"]) == "REJECT"
+    assert "proper_name" in builder.candidates["верхнеблаговещенское"].reasons
+    assert builder.status(builder.candidates["лев"]) == "REVIEW"
+    assert "conflicting_source_metadata" in builder.candidates["лев"].reasons
+    assert builder.status(builder.candidates["этот"]) == "REJECT"
+    assert "pronoun" in builder.candidates["этот"].reasons
+    for word in ("байрактаровский", "марьинорощинский"):
+        assert builder.status(builder.candidates[word]) == "REJECT"
+        assert "proper_derived" in builder.candidates[word].reasons
+
+
+def test_wiktionary_gerund_introductory_and_weak_evidence(tmp_path) -> None:
+    source = tmp_path / "ru.jsonl.gz"
+    _write_wiktionary(
+        source,
+        [
+            {
+                "word": "делая",
+                "lang_code": "ru",
+                "pos": "verb",
+                "tags": ["gerund", "participle"],
+                "senses": [{"glosses": ["дееприч. от делать"]}],
+            },
+            {
+                "word": "конечно",
+                "lang_code": "ru",
+                "pos": "adverb",
+                "senses": [{"glosses": ["вводн. сл. выражает уверенность"]}],
+            },
+            {
+                "word": "серьезно",
+                "lang_code": "ru",
+                "pos": "adverb",
+                "senses": [
+                    {"glosses": ["вводн. сл. выражает оценку"]},
+                    {"glosses": ["с большой серьёзностью"]},
+                ],
+            },
+            {"word": "безглоссовый", "lang_code": "ru", "pos": "adjective", "senses": [{}]},
+        ],
+    )
+    builder = CandidateBuilder()
+    builder.add_wiktionary(source)
+    builder.classify()
+    assert "делая" not in builder.candidates
+    assert builder.status(builder.candidates["конечно"]) == "REJECT"
+    assert "introductory_only" in builder.candidates["конечно"].reasons
+    assert builder.status(builder.candidates["серьезно"]) == "REVIEW"
+    assert "introductory_with_independent_sense" in builder.candidates["серьезно"].reasons
+    assert builder.status(builder.candidates["безглоссовый"]) == "REVIEW"
+    assert "weak_wiktionary_evidence" in builder.candidates["безглоссовый"].reasons
+
+
+def test_opencorpora_excluded_grammemes(tmp_path) -> None:
+    xml = """<dictionary version="0.92" revision="405913"><lemmata>
+    <lemma><l t="этот"><g v="ADJF"/><g v="Apro"/></l><f t="этот"><g v="masc"/><g v="sing"/><g v="nomn"/></f></lemma>
+    <lemma><l t="его"><g v="ADJF"/><g v="Apro"/></l><f t="его"><g v="masc"/><g v="sing"/><g v="nomn"/></f></lemma>
+    <lemma><l t="невознобновимый"><g v="ADJF"/><g v="Erro"/></l><f t="невознобновимый"><g v="masc"/><g v="sing"/><g v="nomn"/></f></lemma>
+    </lemmata></dictionary>"""
+    source = tmp_path / "dict.xml.bz2"
+    source.write_bytes(bz2.compress(xml.encode()))
+    builder = CandidateBuilder()
+    builder.add_opencorpora(source)
+    builder.classify()
+    assert builder.status(builder.candidates["этот"]) == "REJECT"
+    assert "pronoun" in builder.candidates["этот"].reasons
+    assert builder.status(builder.candidates["его"]) == "REJECT"
+    assert builder.status(builder.candidates["невознобновимый"]) == "REJECT"
+    assert "typo" in builder.candidates["невознобновимый"].reasons
+    summary = builder.write_outputs(tmp_path / "report")
+    assert summary["opencorpora_metadata"] == {"version": "0.92", "revision": "405913"}
+    assert set(summary["status_by_source"]) == {"legacy", "opencorpora", "wiktionary"}
+    assert set(summary["accepted_by_kind"]) == {"NOUN", "INFN", "ADJF", "PRTF", "ADVB"}
+
+
 def test_clean_and_proper_homonym_is_reviewed_as_conflicting(tmp_path) -> None:
     source = tmp_path / "ru.jsonl.gz"
     _write_wiktionary(
