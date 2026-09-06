@@ -1,8 +1,14 @@
 import bz2
 import gzip
 import json
+import re
 
-from backend.tools.build_dictionary_candidates import CandidateBuilder, normalize_word
+from backend.tools.build_dictionary_candidates import (
+    PROPER_TARGET,
+    CandidateBuilder,
+    _is_proper_derived_gloss,
+    normalize_word,
+)
 
 
 def test_normalize_word() -> None:
@@ -446,6 +452,119 @@ def test_proper_derived_requires_a_concrete_capitalized_target(tmp_path) -> None
     for word in ("гатчинский", "боровичанка", "канец", "центральноамериканец"):
         assert builder.status(builder.candidates[word]) == "REJECT"
         assert "proper_derived" in builder.candidates[word].reasons
+
+
+def test_proper_derived_targets_are_grouped_and_complete() -> None:
+    assert not _is_proper_derived_gloss("adjective", "описание восточной части Украины")
+    assert not _is_proper_derived_gloss("adjective", "книга о западной части России")
+    assert _is_proper_derived_gloss("adjective", "относящийся к восточной части Украины")
+    assert _is_proper_derived_gloss("noun", "житель Санкт-Петербурга")
+    assert _is_proper_derived_gloss("noun", "житель МГУ")
+    assert _is_proper_derived_gloss("adjective", "относящийся к компании Microsoft")
+    for target in ("Санкт-Петербурга", "МГУ", "Ростов-на-Дону", "Microsoft", "New-York"):
+        assert re.fullmatch(PROPER_TARGET, target)
+
+
+def test_residual_proper_derived_and_full_lexicographic_phrases(tmp_path) -> None:
+    source = tmp_path / "ru.jsonl.gz"
+    _write_wiktionary(
+        source,
+        [
+            {
+                "word": "екатеринбурженка",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["жительница Екатеринбурга"]}],
+            },
+            {
+                "word": "санктпетербуржец",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["житель Санкт-Петербурга"]}],
+            },
+            {
+                "word": "владивостоковец",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["житель или уроженец Владивостока"]}],
+            },
+            {
+                "word": "восточноевропеец",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["житель Восточной Европы"]}],
+            },
+            {
+                "word": "древнегрузинский",
+                "lang_code": "ru",
+                "pos": "adjective",
+                "senses": [{"glosses": ["относящийся к древней Грузии"]}],
+            },
+            {
+                "word": "майкрософтовский",
+                "lang_code": "ru",
+                "pos": "adjective",
+                "senses": [{"glosses": ["относящийся к компании Microsoft"]}],
+            },
+            {
+                "word": "хемингуэевский",
+                "lang_code": "ru",
+                "pos": "adjective",
+                "senses": [{"glosses": ["принадлежащий человеку по фамилии Хемингуэй"]}],
+            },
+            {
+                "word": "гелиометеорологический",
+                "lang_code": "ru",
+                "pos": "adjective",
+                "senses": [
+                    {"glosses": ["связанный с изучением влияния Солнца на атмосферу Земли"]}
+                ],
+            },
+            {
+                "word": "ковыряльник",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["жаргонное название оружия"]}],
+            },
+            {
+                "word": "вентилек",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["уменьшительное от вентиль"]}],
+            },
+            {
+                "word": "дитятце",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["уменьшительный вариант для дитя"]}],
+            },
+            {
+                "word": "ребячка",
+                "lang_code": "ru",
+                "pos": "noun",
+                "senses": [{"glosses": ["сокращённое название для ребёнка"]}],
+            },
+        ],
+    )
+    builder = CandidateBuilder()
+    builder.add_wiktionary(source)
+    builder.classify()
+    for word in (
+        "екатеринбурженка",
+        "санктпетербуржец",
+        "владивостоковец",
+        "восточноевропеец",
+        "древнегрузинский",
+        "майкрософтовский",
+        "хемингуэевский",
+    ):
+        assert builder.status(builder.candidates[word]) == "REJECT"
+        assert "proper_derived" in builder.candidates[word].reasons
+    assert "proper_derived" not in builder.candidates["гелиометеорологический"].flags
+    assert builder.status(builder.candidates["ковыряльник"]) == "REJECT"
+    assert builder.status(builder.candidates["вентилек"]) == "REJECT"
+    assert builder.status(builder.candidates["дитятце"]) == "REJECT"
+    assert builder.status(builder.candidates["ребячка"]) == "REJECT"
 
 
 def test_compound_labels_and_adjective_forms(tmp_path) -> None:

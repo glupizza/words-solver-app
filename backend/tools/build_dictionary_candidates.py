@@ -57,6 +57,7 @@ CLASSIFICATION_REASONS = HARD_FLAGS | {
     "diminutive_metadata_ambiguous",
     "introductory_with_independent_sense",
     "weak_wiktionary_evidence",
+    "possible_proper_derived",
     "legacy_only",
     "unsupported_or_unknown_form",
     "conflicting_source_metadata",
@@ -116,15 +117,19 @@ GLOSS_LABELS = {
     "gerund": r"дееприч\.",
     "introductory": r"вводн\.\s*сл\.",
 }
-PROPER_TARGET = r"[А-ЯЁ][а-яё-]*(?:\s+[А-ЯЁ][а-яё-]*)*"
+CYRILLIC_PROPER_TOKEN = r"[А-ЯЁ][А-ЯЁа-яё]*(?:-[А-ЯЁа-яё][А-ЯЁа-яё]*)*"
+LATIN_PROPER_TOKEN = r"[A-Z][A-Za-z]*(?:-[A-Za-z][A-Za-z]*)*"
+PROPER_TOKEN = rf"(?:{CYRILLIC_PROPER_TOKEN}|{LATIN_PROPER_TOKEN})"
+PROPER_TARGET = rf"{PROPER_TOKEN}(?:\s+{PROPER_TOKEN})*(?![A-Za-zА-ЯЁа-яё-])"
+MODIFIED_PROPER_TARGET = rf"(?:(?:(?:древней|восточной|западной)\s+)?{PROPER_TARGET}|(?:восточной|западной)\s+части\s+{PROPER_TARGET})"
 ADJECTIVE_PROPER_DERIVED_RE = re.compile(
-    rf"(?:связанный|соотносящийся).*?(?:с\s+существительным|с)\s+{PROPER_TARGET}"
-    rf"|относящийся\s+к\s+(?:{PROPER_TARGET}|(?:городу|топониму|селу|деревне|реке|области|краю)\s+{PROPER_TARGET})"
-    rf"|связанный\s+с\s+{PROPER_TARGET}"
-    rf"|(?:человеку\s+с\s+фамилией|от\s+(?:имени|фамилии))\s+{PROPER_TARGET}",
+    rf"(?:связанный|соотносящийся).*?(?:с\s+существительным|с)\s+{MODIFIED_PROPER_TARGET}"
+    rf"|относящийся\s+к\s+(?:{MODIFIED_PROPER_TARGET}|(?:городу|топониму|селу|деревне|реке|области|краю|компании)\s+{MODIFIED_PROPER_TARGET})"
+    rf"|связанный\s+с\s+{MODIFIED_PROPER_TARGET}"
+    rf"|(?:человеку\s+с\s+фамилией|(?:от|по)\s+(?:имени|фамилии))\s+{PROPER_TARGET}",
 )
 NOUN_PROPER_DERIVED_RE = re.compile(
-    rf"(?:житель|жительница|уроженец|уроженка)(?:\s+или\s+(?:житель|жительница|уроженец|уроженка))?\s+(?:(?:города|села|деревни|реки|области|края)\s+{PROPER_TARGET}|(?:Северной|Южной|Центральной)\s+Америки)"
+    rf"(?:житель|жительница|уроженец|уроженка)(?:\s+или\s+(?:житель|жительница|уроженец|уроженка))?\s+(?:{PROPER_TARGET}|(?:города|села|деревни|реки|области|края)\s+{PROPER_TARGET})"
     rf"|этнохороним\s+от\s+{PROPER_TARGET}",
 )
 
@@ -140,6 +145,19 @@ def _is_proper_derived_gloss(pos: str, gloss: str) -> bool:
     if pos == "noun":
         return bool(NOUN_PROPER_DERIVED_RE.search(gloss))
     return False
+
+
+def _is_possible_proper_derived_gloss(pos: str, gloss: str) -> bool:
+    """Keep uncertain relation wording out of ACCEPT without treating it as hard proof."""
+    if pos not in {"noun", "adj", "adjective"}:
+        return False
+    return bool(
+        re.search(
+            r"(?:связанный|соотносящийся|относящийся)\s+(?:с|к)\s+"
+            r"(?!(?:изучением|влиянием|исследованием)\b)(?:[а-яё-]+\s+){0,2}" + PROPER_TARGET,
+            gloss,
+        )
+    )
 
 
 def _flags_from_metadata(
@@ -200,6 +218,16 @@ def _flags_from_metadata(
     if _has_gloss_label(gloss_text, r"разг\.\s*-\s*сниж\."):
         flags.discard("colloquial")
         flags.add("vernacular")
+    lower_gloss = gloss_text.lower()
+    if re.search(r"\b(?:жаргонное|сленговое)\s+(?:слово|название)\b", lower_gloss):
+        flags.add("slang")
+    if re.search(
+        r"\b(?:уменьшительное\s+от|уменьшительный\s+вариант|уменьшительно-ласкательное\s+от|ласкательное\s+(?:обращение|от))",
+        lower_gloss,
+    ):
+        flags.add("diminutive")
+    if re.search(r"\bсокращ[её]н(?:ное|ная)\s+(?:название|форма)\b", lower_gloss):
+        flags.add("abbreviation")
     return flags
 
 
@@ -486,6 +514,8 @@ class CandidateBuilder:
             flags_for_sense = _flags_from_metadata(sense_tags, gloss_text=" ".join(sense_glosses))
             if _is_proper_derived_gloss(pos, " ".join(sense_glosses)):
                 flags_for_sense.add("proper_derived")
+            elif _is_possible_proper_derived_gloss(pos, " ".join(sense_glosses)):
+                flags_for_sense.add("possible_proper_derived")
             sense_flags.append(flags_for_sense)
         entry_flags = _flags_from_metadata(tags, category_text)
         flags = entry_flags | set().union(*sense_flags)
@@ -653,6 +683,7 @@ class CandidateBuilder:
             "neologism",
             "diminutive_independent_sense",
             "introductory_with_independent_sense",
+            "possible_proper_derived",
         }
         for candidate in self.candidates.values():
             if candidate.invalid:
@@ -759,6 +790,8 @@ class CandidateBuilder:
                 "accepted_by_source": self._accepted_by_source(grouped["ACCEPT"]),
                 "accepted_by_kind": self._accepted_by_kind(grouped["ACCEPT"]),
                 "accepted_length_by_source": self._accepted_length_by_source(grouped["ACCEPT"]),
+                "review_reason_counts": self._reason_counts(grouped["REVIEW"]),
+                "reject_reason_counts": self._reason_counts(grouped["REJECT"]),
             }
         )
         (output_dir / "summary.json").write_text(
@@ -843,6 +876,14 @@ class CandidateBuilder:
             }
             for limit in (10, 12, 15, 18, 20)
         }
+
+    @staticmethod
+    def _reason_counts(candidates: list[Candidate]) -> dict[str, int]:
+        return dict(
+            sorted(
+                Counter(reason for candidate in candidates for reason in candidate.reasons).items()
+            )
+        )
 
     def _presence_table(self) -> dict[str, dict[str, Any]]:
         table = {}
