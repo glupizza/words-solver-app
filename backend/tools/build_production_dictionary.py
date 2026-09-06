@@ -45,6 +45,8 @@ HOLDOUT_PATTERNS = (
     ),
     ("explicit_vernacular_label", re.compile(r"(?:^|[\s,;:(.\-])простореч\.")),
 )
+DEFAULT_MANUAL_HOLDOUT = Path(__file__).with_name("dictionary_production_holdout.txt")
+MANUAL_WORD = re.compile(r"^[а-яё]{2,25}$")
 
 
 def holdout_reason(evidence: str) -> str | None:
@@ -55,6 +57,21 @@ def holdout_reason(evidence: str) -> str | None:
     return None
 
 
+def load_manual_holdout(path: Path) -> set[str]:
+    """Load a deliberately explicit policy list without silently normalizing it."""
+    words: set[str] = set()
+    for line_number, raw_line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        word = raw_line.strip()
+        if not word or word.startswith("#"):
+            continue
+        if not MANUAL_WORD.fullmatch(word):
+            raise ValueError(f"invalid manual holdout word at line {line_number}: {word!r}")
+        if word in words:
+            raise ValueError(f"duplicate manual holdout word at line {line_number}: {word}")
+        words.add(word)
+    return words
+
+
 def _write_csv(path: Path, fields: list[str], rows: list[dict[str, str]]) -> None:
     with path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.DictWriter(stream, fieldnames=fields)
@@ -62,7 +79,10 @@ def _write_csv(path: Path, fields: list[str], rows: list[dict[str, str]]) -> Non
         writer.writerows(rows)
 
 
-def build(accepted_csv: Path, output_dir: Path) -> dict[str, object]:
+def build(
+    accepted_csv: Path, output_dir: Path, manual_holdout: Path | None = None
+) -> dict[str, object]:
+    manual_words = load_manual_holdout(manual_holdout or DEFAULT_MANUAL_HOLDOUT)
     with accepted_csv.open("r", encoding="utf-8", newline="") as stream:
         reader = csv.DictReader(stream)
         actual_fields = set(reader.fieldnames or [])
@@ -78,12 +98,17 @@ def build(accepted_csv: Path, output_dir: Path) -> dict[str, object]:
     tiers = Counter(row["confidence_tier"] for row in rows)
     reasons: Counter[str] = Counter()
     excluded_d = 0
+    manual_matched: set[str] = set()
     for row in rows:
         if row["confidence_tier"] not in INCLUDED_TIERS:
             if row["confidence_tier"] == "D_SINGLE_SOURCE":
                 excluded_d += 1
             continue
         reason = holdout_reason(row["evidence"])
+        if row["word"] in manual_words:
+            manual_matched.add(row["word"])
+        if reason is None and row["word"] in manual_words:
+            reason = "manual_proper_derived"
         if reason:
             reasons[reason] += 1
             review_rows.append(
@@ -111,6 +136,8 @@ def build(accepted_csv: Path, output_dir: Path) -> dict[str, object]:
         "included": len(words),
         "held_out": len(review_rows),
         "excluded_d_single_source": excluded_d,
+        "manual_holdout_words_loaded": len(manual_words),
+        "manual_holdout_words_matched": len(manual_matched),
         "counts_by_confidence_tier": dict(sorted(tiers.items())),
         "holdout_reason_counts": dict(sorted(reasons.items())),
         "length_counts": {
@@ -130,8 +157,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--accepted-csv", required=True, type=Path)
     parser.add_argument("--output-dir", required=True, type=Path)
+    parser.add_argument("--manual-holdout", type=Path, default=DEFAULT_MANUAL_HOLDOUT)
     args = parser.parse_args()
-    summary = build(args.accepted_csv, args.output_dir)
+    summary = build(args.accepted_csv, args.output_dir, args.manual_holdout)
     print(json.dumps({key: summary[key] for key in ("included", "held_out")}, ensure_ascii=False))
 
 
