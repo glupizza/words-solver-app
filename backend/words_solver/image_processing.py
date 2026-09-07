@@ -46,10 +46,31 @@ def is_color_in_range(color, color_range):
     )
 
 
+def color_fraction(region, color_range):
+    if region.size == 0:
+        return 0.0
+    if not (
+        isinstance(color_range, tuple)
+        and len(color_range) == 2
+        and all(isinstance(r, list) and len(r) == 3 for r in color_range)
+    ):
+        raise ValueError("color_range must be a tuple of two lists of length 3")
+
+    lower_bounds, upper_bounds = color_range
+    hsv = cv2.cvtColor(region, cv2.COLOR_BGR2HSV)
+    mask = cv2.inRange(
+        hsv,
+        np.asarray(lower_bounds, dtype=np.uint8),
+        np.asarray(upper_bounds, dtype=np.uint8),
+    )
+    return cv2.countNonZero(mask) / mask.size
+
+
 # HSV ranges for multipliers
 ORANGE_RANGE = ([0, 50, 150], [30, 255, 255])  # x2, c2
 PURPLE_RANGE = ([100, 50, 150], [137, 255, 255])  # x3, c3
 RED_RANGE = ([35, 80, 220], [70, 130, 250])  # red corner masking
+MULTIPLIER_COLOR_MIN_FRACTION = float(os.getenv("MULTIPLIER_COLOR_MIN_FRACTION", "0.20"))
 
 
 CLASS_LABELS = {
@@ -208,6 +229,18 @@ def grid_coordinates(board_image):
     ]
 
 
+def _detect_multiplier(top_left_region, bottom_left_region):
+    if color_fraction(top_left_region, ORANGE_RANGE) >= MULTIPLIER_COLOR_MIN_FRACTION:
+        return "x2"
+    if color_fraction(top_left_region, PURPLE_RANGE) >= MULTIPLIER_COLOR_MIN_FRACTION:
+        return "x3"
+    if color_fraction(bottom_left_region, ORANGE_RANGE) >= MULTIPLIER_COLOR_MIN_FRACTION:
+        return "c2"
+    if color_fraction(bottom_left_region, PURPLE_RANGE) >= MULTIPLIER_COLOR_MIN_FRACTION:
+        return "c3"
+    return None
+
+
 def recognize_board_cells(cropped_image, model, *, capture_debug=False):
     """Execute the production split/preprocess/predict stages, excluding word search.
 
@@ -243,15 +276,7 @@ def recognize_board_cells(cropped_image, model, *, capture_debug=False):
         bottom_left_region = cell[
             -corner_size - shift_y : -shift_y, shift_x : shift_x + corner_size
         ]
-        multiplier = None
-        if is_color_in_range(avg_hsv(top_left_region), ORANGE_RANGE):
-            multiplier = "x2"
-        elif is_color_in_range(avg_hsv(top_left_region), PURPLE_RANGE):
-            multiplier = "x3"
-        elif is_color_in_range(avg_hsv(bottom_left_region), ORANGE_RANGE):
-            multiplier = "c2"
-        elif is_color_in_range(avg_hsv(bottom_left_region), PURPLE_RANGE):
-            multiplier = "c3"
+        multiplier = _detect_multiplier(top_left_region, bottom_left_region)
         if multiplier:
             detected_multipliers[(row, col)] = multiplier
             large_corner = int(cell_width * 0.58)
