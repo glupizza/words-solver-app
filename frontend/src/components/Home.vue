@@ -123,10 +123,27 @@
         </div>
 
         <template v-if="!grailLoading && grailHasSearched && !grailErrorMessage">
-          <div class="result-tabs" role="tablist" aria-label="Результаты Грааля">
-            <button type="button" role="tab" :aria-selected="grailTab === 'best'" :class="{ active: grailTab === 'best' }" @click="grailTab = 'best'">Лучшие</button>
-            <button type="button" role="tab" :aria-selected="grailTab === 'series'" :class="{ active: grailTab === 'series' }" @click="grailTab = 'series'">Серии</button>
-          </div>
+            <div class="result-tabs" role="tablist" aria-label="Результаты Грааля">
+              <button
+                type="button"
+                role="tab"
+                :aria-selected="grailTab === 'series'"
+                :class="{ active: grailTab === 'series' }"
+                @click="grailTab = 'series'"
+              >
+                Серии
+              </button>
+
+              <button
+                type="button"
+                role="tab"
+                :aria-selected="grailTab === 'best'"
+                :class="{ active: grailTab === 'best' }"
+                @click="grailTab = 'best'"
+              >
+                Лучшие
+              </button>
+            </div>
 
           <div v-if="grailTab === 'best'">
             <div v-if="grailWords.length === 0" class="empty">Слова не найдены</div>
@@ -184,7 +201,7 @@ export default {
       grailLoading: false,
       grailErrorMessage: '',
       grailHasSearched: false,
-      grailTab: 'best',
+      grailTab: 'series',
       expandedBestWord: null,
       expandedSeriesWord: null,
     };
@@ -197,19 +214,17 @@ export default {
     },
     handleGrailFilesChange(event) {
       const files = Array.from(event.target.files || []);
-      const availableSlots = 5 - this.grailFiles.length;
-      const filesToAdd = files.slice(0, availableSlots);
 
-      this.grailFiles.push(
-        ...filesToAdd.map((file) => ({
-          file,
-          preview: URL.createObjectURL(file),
-        })),
-      );
+      this.clearGrailPreviews();
+
+      this.grailFiles = files.slice(0, 5).map((file) => ({
+        file,
+        preview: URL.createObjectURL(file),
+      }));
 
       this.grailSelectionMessage =
-        files.length > availableSlots
-          ? 'Можно выбрать не более 5 изображений.'
+        files.length > 5
+          ? 'Можно выбрать не более 5 изображений. Оставлены первые 5.'
           : '';
 
       this.grailErrorMessage = '';
@@ -218,6 +233,7 @@ export default {
       this.grailSeries = [];
       this.expandedBestWord = null;
       this.expandedSeriesWord = null;
+
       event.target.value = '';
     },
     removeGrailFile(index) {
@@ -300,7 +316,7 @@ export default {
         this.grailWords = Array.isArray(data.words) ? data.words : [];
         this.grailSeries = Array.isArray(data.series) ? data.series : [];
         this.grailHasSearched = true;
-        this.grailTab = 'best';
+        this.grailTab = 'series';
       } catch (error) {
         console.error('Grail network error:', error);
         this.grailErrorMessage = 'Ошибка сети';
