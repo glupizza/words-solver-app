@@ -7,6 +7,8 @@ from backend.words_solver.grail_processing import (
     MIN_WORD_SCORE,
     PRIORITY_SERIES_SUFFIXES,
     GrailMultiplierConflict,
+    _merge_series_by_suffix,
+    _series_metrics,
     merge_cell_letters,
     merge_multipliers,
     select_series,
@@ -151,6 +153,48 @@ def test_series_suffix_length_floor_ignores_smaller_requested_minimum():
 
     assert selected
     assert all(series["suffix_length"] >= MIN_SERIES_SUFFIX_LENGTH for series in selected)
+
+
+def test_same_suffix_paths_merge_into_one_ui_series_with_word_union():
+    suffix = "normtail"
+    results = {}
+    for prefix, score in (("a", 900), ("b", 800), ("c", 700)):
+        name = prefix + suffix
+        results[name] = _result(name, score, [ord(prefix)] + list(range(1, len(suffix) + 1)))
+    for prefix, score in (("d", 600), ("e", 500), ("f", 400)):
+        name = prefix + suffix
+        results[name] = _result(name, score, [ord(prefix)] + list(range(11, len(suffix) + 11)))
+
+    selected = select_series(results)
+    series = [item for item in selected if item["suffix"] == suffix]
+
+    assert len(series) == 1
+    assert {member["name"] for member in series[0]["good_members"]} == set(results)
+    assert len([item["suffix"] for item in selected]) == len({item["suffix"] for item in selected})
+
+
+def test_merged_series_deduplicates_words_and_recomputes_metrics():
+    suffix = "normtail"
+    first = _series_metrics(
+        suffix,
+        [1] * len(suffix),
+        [_result("alpha", 900, [1]), _result("shared", 500, [2]), _result("beta", 800, [3])],
+    )
+    second = _series_metrics(
+        suffix,
+        [2] * len(suffix),
+        [_result("shared", 600, [4]), _result("gamma", 700, [5]), _result("delta", 400, [6])],
+    )
+
+    merged = _merge_series_by_suffix([first, second])
+    serialized = serialize_series(merged[0])
+
+    assert len(merged) == 1
+    assert merged[0]["good_count"] == 5
+    assert merged[0]["best_score"] == 900
+    assert merged[0]["top3_sum"] == 2400
+    assert merged[0]["top5_sum"] == 3400
+    assert next(word for word in serialized["words"] if word["name"] == "shared")["score"] == 600
 
 
 def test_priority_series_returns_all_members_and_normal_series_selects_best_ten_first():

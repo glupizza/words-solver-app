@@ -136,12 +136,22 @@ export default {
 }
 
 .path-cell.used.suffix {
-  border-color: var(--accent-hover);
-  background: var(--accent-hover);
+  border-color: var(--color-warm);
+  background: var(--color-warm);
 }
 
 .path-cell.used.start {
-  box-shadow: inset 0 0 0 3px var(--text), 0 2px 8px rgba(75, 99, 130, 0.22);
+  border-color: var(--color-secondary);
+  color: var(--text);
+  background: var(--color-secondary);
+  box-shadow: 0 2px 8px rgba(75, 99, 130, 0.22);
+}
+
+.path-cell.used.start.suffix {
+  border-color: var(--color-warm);
+  color: #ffffff;
+  background: var(--accent-hover);
+  box-shadow: inset 0 0 0 3px var(--color-warm), 0 2px 8px rgba(75, 99, 130, 0.22);
 }
 
 .path-letter {

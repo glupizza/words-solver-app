@@ -165,6 +165,26 @@ def _suppresses(longer, shorter):
     )
 
 
+def _merge_series_by_suffix(series):
+    merged = {}
+    for item in series:
+        current = merged.get(item["suffix"])
+        if current is None:
+            current = {
+                "suffix_path": item["suffix_path"],
+                "members": {},
+            }
+            merged[item["suffix"]] = current
+        for member in item["good_members"]:
+            existing = current["members"].get(member["name"])
+            if existing is None or member["score"] > existing["score"]:
+                current["members"][member["name"]] = member
+    return [
+        _series_metrics(suffix, item["suffix_path"], item["members"].values())
+        for suffix, item in merged.items()
+    ]
+
+
 def select_series(results, min_suffix_length=MIN_SERIES_SUFFIX_LENGTH):
     candidates = build_series(results, min_suffix_length)
 
@@ -181,6 +201,7 @@ def select_series(results, min_suffix_length=MIN_SERIES_SUFFIX_LENGTH):
             continue
         selected.append(candidate)
 
+    selected = _merge_series_by_suffix(selected)
     priority = [
         candidate
         for suffix in PRIORITY_SERIES_SUFFIXES
