@@ -97,6 +97,83 @@ def test_grail_search_keeps_highest_scoring_path():
     )
 
 
+def test_grail_search_keeps_first_path_when_scores_are_equal():
+    letters = _letters("\u044f")
+    for row in (0, 1):
+        letters[row][:3] = [{"\u0434"}, {"\u043e"}, {"\u043c"}]
+    trie = build_trie(["\u0434\u043e\u043c"])
+
+    found = find_grail_words(letters, _multipliers(), trie)
+
+    assert found["\u0434\u043e\u043c"]["path"] == (
+        (0, 0, "\u0434"),
+        (0, 1, "\u043e"),
+        (0, 2, "\u043c"),
+    )
+
+
+def test_grail_search_keeps_first_equal_score_path_for_same_cells():
+    letters = _letters("\u044f")
+    letters[0][0] = {"\u0430"}
+    letters[0][1] = {"\u0430"}
+    letters[1][0] = {"\u0431"}
+    trie = build_trie(["\u0430\u0430\u0431"])
+
+    found = find_grail_words(letters, _multipliers(), trie)
+
+    assert found["\u0430\u0430\u0431"]["path"] == (
+        (0, 0, "\u0430"),
+        (0, 1, "\u0430"),
+        (1, 0, "\u0431"),
+    )
+
+
+def test_grail_search_keeps_higher_score_path_for_same_cells():
+    letters = _letters("\u044f")
+    letters[0][0] = {"\u0430"}
+    letters[0][1] = {"\u0430"}
+    letters[1][0] = {"\u0431"}
+    multipliers = _multipliers()
+    multipliers[0][0] = "x3"
+    trie = build_trie(["\u0430\u0430\u0431"])
+
+    found = find_grail_words(letters, multipliers, trie)
+
+    assert found["\u0430\u0430\u0431"]["score"] == 10
+    assert found["\u0430\u0430\u0431"]["path"] == (
+        (0, 1, "\u0430"),
+        (0, 0, "\u0430"),
+        (1, 0, "\u0431"),
+    )
+
+
+def test_grail_search_applies_c2_and_c3_once_each():
+    letters = _letters("\u044f")
+    letters[0][:3] = [{"\u0434"}, {"\u043e"}, {"\u043c"}]
+    multipliers = _multipliers()
+    multipliers[0][0] = "c2"
+    multipliers[0][1] = "c3"
+    multipliers[0][2] = "c3"
+    trie = build_trie(["\u0434\u043e\u043c"])
+
+    found = find_grail_words(letters, multipliers, trie)
+
+    assert found["\u0434\u043e\u043c"]["score"] == 36
+
+
+def test_grail_search_applies_x2_and_x3_by_position():
+    letters = _letters("\u044f")
+    letters[0][:3] = [{"\u0434"}, {"\u043e"}, {"\u043c"}]
+    multipliers = _multipliers()
+    multipliers[0][0] = "x2"
+    multipliers[0][1] = "x3"
+    trie = build_trie(["\u0434\u043e\u043c"])
+
+    found = find_grail_words(letters, multipliers, trie)
+
+    assert found["\u0434\u043e\u043c"]["score"] == 11
+
+
 def test_grail_search_deduplicates_letters_in_a_cell():
     letters = _letters("\u044f")
     letters[0][0] = ["\u043a", "\u043a", "\u043a"]

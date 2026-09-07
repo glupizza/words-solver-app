@@ -1,9 +1,8 @@
 """Trie search for a fixed-size Grail board with per-cell letter choices."""
 
-from .word_search import calculate_word_score
-
 GRID_SIZE = 5
 CELL_COUNT = GRID_SIZE * GRID_SIZE
+WORD_MULTIPLIER_FACTORS = (1, 2, 3, 6)
 RUSSIAN_LETTERS = frozenset(
     "\u0430\u0431\u0432\u0433\u0434\u0435\u0451\u0436\u0437\u0438\u0439\u043a\u043b\u043c\u043d\u043e\u043f\u0440\u0441\u0442\u0443\u0444\u0445\u0446\u0447\u0448\u0449\u044a\u044b\u044c\u044d\u044e\u044f"
 )
@@ -80,16 +79,24 @@ def find_grail_words(cell_letters, multipliers, trie):
     """
     prepared_letters = _prepare_cell_letters(cell_letters)
     flat_multipliers = _prepare_multipliers(multipliers)
+    letter_score_factors = tuple(
+        2 if multiplier == "x2" else 3 if multiplier == "x3" else 1
+        for multiplier in flat_multipliers
+    )
+    word_multiplier_bits = tuple(
+        1 if multiplier == "c2" else 2 if multiplier == "c3" else 0
+        for multiplier in flat_multipliers
+    )
     found_words = {}
     path_letters = []
     path_positions = []
-    path_multipliers = []
-    word_multipliers = []
 
-    def visit(position, node, visited):
+    def visit(position, node, visited, score_state):
+        raw_score = score_state >> 2
+
         if len(path_letters) > 1 and node.is_end_of_word:
             word = "".join(path_letters)
-            score = calculate_word_score(word, path_multipliers, word_multipliers)
+            score = raw_score * WORD_MULTIPLIER_FACTORS[score_state & 3]
             previous = found_words.get(word)
             if previous is None or score > previous["score"]:
                 found_words[word] = {
@@ -101,44 +108,44 @@ def find_grail_words(cell_letters, multipliers, trie):
                     ),
                 }
 
+        children = node.children
+        if not children:
+            return
+        children_get = children.get
+
         for next_position in NEIGHBOURS[position]:
             next_bit = 1 << next_position
             if visited & next_bit:
                 continue
-            multiplier = flat_multipliers[next_position]
             for letter in prepared_letters[next_position]:
-                child = node.children.get(letter)
+                child = children_get(letter)
                 if child is None:
                     continue
                 path_letters.append(letter)
                 path_positions.append(next_position)
-                path_multipliers.append(multiplier)
-                is_word_multiplier = multiplier in ("c2", "c3")
-                if is_word_multiplier:
-                    word_multipliers.append(multiplier)
-                visit(next_position, child, visited | next_bit)
-                if is_word_multiplier:
-                    word_multipliers.pop()
-                path_multipliers.pop()
+                next_score_state = (
+                    (score_state & ~3)
+                    + (len(path_letters) * letter_score_factors[next_position] << 2)
+                    | (score_state & 3)
+                    | word_multiplier_bits[next_position]
+                )
+                visit(next_position, child, visited | next_bit, next_score_state)
                 path_positions.pop()
                 path_letters.pop()
 
     for position in range(CELL_COUNT):
-        multiplier = flat_multipliers[position]
         for letter in prepared_letters[position]:
             child = trie.root.children.get(letter)
             if child is None:
                 continue
             path_letters.append(letter)
             path_positions.append(position)
-            path_multipliers.append(multiplier)
-            is_word_multiplier = multiplier in ("c2", "c3")
-            if is_word_multiplier:
-                word_multipliers.append(multiplier)
-            visit(position, child, 1 << position)
-            if is_word_multiplier:
-                word_multipliers.pop()
-            path_multipliers.pop()
+            visit(
+                position,
+                child,
+                1 << position,
+                letter_score_factors[position] << 2 | word_multiplier_bits[position],
+            )
             path_positions.pop()
             path_letters.pop()
 
