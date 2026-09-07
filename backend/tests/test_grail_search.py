@@ -2,6 +2,7 @@ import pytest
 
 from backend.words_solver.dictionary import build_trie
 from backend.words_solver.grail_search import find_grail_words
+from backend.words_solver.trie import RUSSIAN_LETTER_BITS, Trie
 from backend.words_solver.word_search import find_words
 
 
@@ -15,6 +16,23 @@ def _letters(fill_letter="\u0430"):
 
 def _multipliers():
     return [[None for _ in range(5)] for _ in range(5)]
+
+
+def test_trie_populates_russian_children_masks():
+    trie = build_trie(["\u0434\u043e\u043c", "\u043a\u043e\u0442", "\u0434\u043e\u043c"])
+
+    assert trie.root.children_mask & RUSSIAN_LETTER_BITS["\u0434"]
+    assert trie.root.children_mask & RUSSIAN_LETTER_BITS["\u043a"]
+    assert not trie.root.children_mask & RUSSIAN_LETTER_BITS["\u043c"]
+    assert trie.root.children["\u0434"].children_mask & RUSSIAN_LETTER_BITS["\u043e"]
+
+
+def test_trie_non_russian_children_do_not_change_search_behavior():
+    trie = Trie()
+    trie.insert("cat")
+
+    assert trie.search("cat")
+    assert not trie.root.children_mask
 
 
 def test_singleton_board_matches_production_word_scores():

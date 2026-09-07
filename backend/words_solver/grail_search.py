@@ -1,11 +1,11 @@
 """Trie search for a fixed-size Grail board with per-cell letter choices."""
 
+from .trie import RUSSIAN_LETTER_BITS
+
 GRID_SIZE = 5
 CELL_COUNT = GRID_SIZE * GRID_SIZE
 WORD_MULTIPLIER_FACTORS = (1, 2, 3, 6)
-RUSSIAN_LETTERS = frozenset(
-    "\u0430\u0431\u0432\u0433\u0434\u0435\u0451\u0436\u0437\u0438\u0439\u043a\u043b\u043c\u043d\u043e\u043f\u0440\u0441\u0442\u0443\u0444\u0445\u0446\u0447\u0448\u0449\u044a\u044b\u044c\u044d\u044e\u044f"
-)
+RUSSIAN_LETTERS = frozenset(RUSSIAN_LETTER_BITS)
 
 
 def _build_neighbours():
@@ -78,6 +78,17 @@ def find_grail_words(cell_letters, multipliers, trie):
     first deterministic traversal path.
     """
     prepared_letters = _prepare_cell_letters(cell_letters)
+    prepared_letter_bits = tuple(
+        tuple((letter, RUSSIAN_LETTER_BITS[letter]) for letter in letters)
+        for letters in prepared_letters
+    )
+    cell_letter_masks = []
+    for letter_bits in prepared_letter_bits:
+        cell_letter_mask = 0
+        for _letter, letter_bit in letter_bits:
+            cell_letter_mask |= letter_bit
+        cell_letter_masks.append(cell_letter_mask)
+    cell_letter_masks = tuple(cell_letter_masks)
     flat_multipliers = _prepare_multipliers(multipliers)
     letter_score_factors = tuple(
         2 if multiplier == "x2" else 3 if multiplier == "x3" else 1
@@ -112,12 +123,17 @@ def find_grail_words(cell_letters, multipliers, trie):
         if not children:
             return
         children_get = children.get
+        children_mask = node.children_mask
 
         for next_position in NEIGHBOURS[position]:
             next_bit = 1 << next_position
             if visited & next_bit:
                 continue
-            for letter in prepared_letters[next_position]:
+            if not (children_mask & cell_letter_masks[next_position]):
+                continue
+            for letter, letter_bit in prepared_letter_bits[next_position]:
+                if not (children_mask & letter_bit):
+                    continue
                 child = children_get(letter)
                 if child is None:
                     continue
