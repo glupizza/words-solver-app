@@ -1,5 +1,4 @@
+-r requirements.txt
+
 pytest==8.3.4
 ruff>=0.5,<1
-
-numpy>=1.26,<2
-opencv-python-headless>=4.8,<5
