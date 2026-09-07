@@ -18,6 +18,13 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from backend.tools import debug_board_recognition as board_debug  # noqa: E402
 from backend.words_solver.dictionary import build_trie, load_words  # noqa: E402
+from backend.words_solver.grail_processing import (  # noqa: E402
+    merge_cell_letters,
+    merge_multipliers,
+    serialize_word,
+    top_words,
+    unique_letter_statistics,
+)
 from backend.words_solver.grail_search import GRID_SIZE, find_grail_words  # noqa: E402
 
 IMAGE_NAMES = tuple(f"grail_{index}.png" for index in range(1, 6))
@@ -38,7 +45,7 @@ def _require_five_boards(boards, name):
             raise ValueError(f"each {name} board must be {GRID_SIZE}x{GRID_SIZE}")
 
 
-def merge_cell_letters(boards):
+def _offline_merge_cell_letters(boards):
     """Return the order-independent unique letter alternatives for each cell."""
     _require_five_boards(boards, "letter")
     return [
@@ -47,7 +54,7 @@ def merge_cell_letters(boards):
     ]
 
 
-def merge_multipliers(multiplier_grids):
+def _offline_merge_multipliers(multiplier_grids):
     """Merge fixed-coordinate multipliers and reject contradictory observations."""
     _require_five_boards(multiplier_grids, "multiplier")
     merged = _empty_grid()
@@ -64,7 +71,7 @@ def merge_multipliers(multiplier_grids):
     return merged, sightings
 
 
-def unique_letter_statistics(cell_letters):
+def _offline_unique_letter_statistics(cell_letters):
     counts = [len(cell) for row in cell_letters for cell in row]
     distribution = dict(sorted(Counter(counts).items()))
     return {
@@ -75,7 +82,7 @@ def unique_letter_statistics(cell_letters):
     }
 
 
-def serialize_word(result):
+def _offline_serialize_word(result):
     return {
         "name": result["name"],
         "score": result["score"],
@@ -83,7 +90,7 @@ def serialize_word(result):
     }
 
 
-def top_words(results, limit):
+def _offline_top_words(results, limit):
     if limit < 1:
         raise ValueError("top limit must be at least 1")
     ranked = sorted(results.values(), key=lambda result: (-result["score"], result["name"]))

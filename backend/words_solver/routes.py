@@ -8,6 +8,7 @@ from flask import Blueprint, request
 from PIL import Image, UnidentifiedImageError
 
 from . import metrics
+from .grail_processing import GrailMultiplierConflict, process_grail_images
 from .http import error_response, json_response
 from .image_processing import process_image
 
@@ -101,5 +102,60 @@ def create_routes(model, trie):
                     os.remove(tmp_path)
                 except OSError:
                     logger.exception("failed to remove tmp file tmp_path=%s", tmp_path)
+
+    @bp.post("/upload-grail")
+    def upload_grail():
+        files = request.files.getlist("images")
+        if len(files) != 5:
+            return error_response(
+                code="bad_request", message="Exactly five images are required", status=400
+            )
+        if any(not file.filename for file in files):
+            return error_response(code="bad_request", message="No selected file", status=400)
+
+        suffix_by_mimetype = {
+            "image/png": ".png",
+            "image/jpeg": ".jpg",
+            "image/jpg": ".jpg",
+            "image/webp": ".webp",
+        }
+        paths = []
+        try:
+            for file in files:
+                mimetype = (getattr(file, "mimetype", None) or "").lower()
+                if mimetype and mimetype not in allowed_mime_types:
+                    return error_response(
+                        code="unsupported_media_type", message="Unsupported image type", status=415
+                    )
+                try:
+                    probe = Image.open(file.stream)
+                    probe.verify()
+                except (UnidentifiedImageError, Image.DecompressionBombError):
+                    return error_response(code="bad_request", message="Invalid image", status=400)
+                finally:
+                    try:
+                        file.stream.seek(0)
+                    except Exception:
+                        pass
+                fd, path = tempfile.mkstemp(suffix=suffix_by_mimetype.get(mimetype, ".img"))
+                with os.fdopen(fd, "wb") as temporary_file:
+                    shutil.copyfileobj(file.stream, temporary_file)
+                paths.append(path)
+            result = process_grail_images(paths, model=model, trie=trie)
+            result.pop("timings", None)
+            result.pop("debug", None)
+            return json_response(result, status=200)
+        except GrailMultiplierConflict as exc:
+            logger.info("grail multiplier conflict err=%s", exc)
+            return error_response(code="bad_request", message=str(exc), status=400)
+        except Exception:
+            logger.exception("grail upload failed")
+            return error_response(code="internal_error", message="Upload failed", status=500)
+        finally:
+            for path in paths:
+                try:
+                    os.remove(path)
+                except OSError:
+                    logger.exception("failed to remove grail tmp file tmp_path=%s", path)
 
     return bp
