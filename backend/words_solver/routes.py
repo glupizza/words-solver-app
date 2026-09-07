@@ -1,5 +1,6 @@
 import logging
 import os
+import shutil
 import tempfile
 import time
 
@@ -69,13 +70,15 @@ def create_routes(model, trie):
                 except Exception:
                     pass
 
-            img = Image.open(file.stream)
-            img = img.convert("RGB")
-            img = img.resize((590, 1280), Image.Resampling.LANCZOS)
-
-            fd, tmp_path = tempfile.mkstemp(suffix=".jpg")
-            os.close(fd)
-            img.save(tmp_path, format="JPEG", quality=95)
+            suffix_by_mimetype = {
+                "image/png": ".png",
+                "image/jpeg": ".jpg",
+                "image/jpg": ".jpg",
+                "image/webp": ".webp",
+            }
+            fd, tmp_path = tempfile.mkstemp(suffix=suffix_by_mimetype.get(mimetype, ".img"))
+            with os.fdopen(fd, "wb") as temporary_file:
+                shutil.copyfileobj(file.stream, temporary_file)
 
             t0 = time.perf_counter()
             result = process_image(tmp_path, model=model, trie=trie)

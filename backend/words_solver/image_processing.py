@@ -6,7 +6,7 @@ import cv2
 import numpy as np
 from keras.utils import img_to_array
 
-from .smart_crop import find_board_bbox
+from .smart_crop import BBox, find_board_bbox
 from .word_search import find_words
 
 try:
@@ -133,6 +133,180 @@ TRANSLIT_TO_RUS = {
     "x3": "\u04453",  # х3
 }
 
+GRID_SIZE = 5
+FALLBACK_CROP = (37, 445, 552, 975)
+FALLBACK_REFERENCE_WIDTH = 590
+FALLBACK_REFERENCE_HEIGHT = 1280
+
+
+def default_model_path():
+    """Return the model asset used when MODEL_PATH is not configured."""
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "assets",
+        "letter_recognition_model.h5",
+    )
+
+
+def fallback_crop_bbox(image):
+    """Scale the historical 590x1280 fallback crop to the input image."""
+    height, width = image.shape[:2]
+    x0, y0, x1, y1 = FALLBACK_CROP
+    bbox = BBox(
+        int(round(x0 * width / FALLBACK_REFERENCE_WIDTH)),
+        int(round(y0 * height / FALLBACK_REFERENCE_HEIGHT)),
+        int(round(x1 * width / FALLBACK_REFERENCE_WIDTH)),
+        int(round(y1 * height / FALLBACK_REFERENCE_HEIGHT)),
+    )
+    return bbox.clamp(width, height)
+
+
+def crop_board_image(image, *, debug=False):
+    """Run the production crop selection and return its actual intermediate data."""
+    use_smart = os.getenv("SMART_CROP", "1") not in {"0", "false", "False"}
+    details = {"smart_crop_enabled": use_smart, "smart_crop_used": False}
+    if use_smart:
+        bbox, info, mask, candidates, cluster = find_board_bbox(
+            image,
+            roi_top=float(os.getenv("SMART_CROP_ROI_TOP", "0.18")),
+            roi_bottom=float(os.getenv("SMART_CROP_ROI_BOTTOM", "0.92")),
+            s_max=int(os.getenv("SMART_CROP_S_MAX", "60")),
+            v_min=int(os.getenv("SMART_CROP_V_MIN", "200")),
+            min_tiles=int(os.getenv("SMART_CROP_MIN_TILES", "15")),
+            pad_frac=float(os.getenv("SMART_CROP_PAD_FRAC", "0.02")),
+            debug=debug,
+        )
+        details.update(
+            {"info": info, "bbox": bbox, "mask": mask, "candidates": candidates, "cluster": cluster}
+        )
+        if bbox is not None:
+            details["smart_crop_used"] = True
+            return image[bbox.y0 : bbox.y1, bbox.x0 : bbox.x1], details
+        details["fallback_reason"] = "smart_crop_no_board_found"
+    else:
+        details["fallback_reason"] = "smart_crop_disabled"
+    fallback_bbox = fallback_crop_bbox(image)
+    details["fallback_bbox"] = fallback_bbox
+    return image[fallback_bbox.y0 : fallback_bbox.y1, fallback_bbox.x0 : fallback_bbox.x1], details
+
+
+def grid_coordinates(board_image):
+    """Return the exact fixed 5x5 production splitter coordinates."""
+    height, width = board_image.shape[:2]
+    cell_height, cell_width = height // GRID_SIZE, width // GRID_SIZE
+    return [
+        (
+            row,
+            col,
+            col * cell_width,
+            row * cell_height,
+            (col + 1) * cell_width,
+            (row + 1) * cell_height,
+        )
+        for row in range(GRID_SIZE)
+        for col in range(GRID_SIZE)
+    ]
+
+
+def recognize_board_cells(cropped_image, model, *, capture_debug=False):
+    """Execute the production split/preprocess/predict stages, excluding word search.
+
+    This intentionally preserves the original in-place cell masking and multiplier
+    re-prediction order.  ``capture_debug`` only retains copies of intermediates.
+    """
+    coordinates = grid_coordinates(cropped_image)
+    cell_height = cropped_image.shape[0] // GRID_SIZE
+    cell_width = cropped_image.shape[1] // GRID_SIZE
+    cells_batch, mapping, raw_cells, model_inputs = [], [], {}, {}
+    detected_multipliers = {}
+
+    for row, col, x0, y0, x1, y1 in coordinates:
+        cell = cropped_image[y0:y1, x0:x1]
+        if capture_debug:
+            raw_cells[(row, col)] = cell.copy()
+        shift_x, shift_y = int(cell_width * 0.15), int(cell_height * 0.15)
+        corner_size = int(cell_width * 0.2)
+        bottom_right_region = cell[
+            -corner_size - shift_y : -shift_y, -corner_size - shift_x : -shift_x
+        ]
+        if is_color_in_range(avg_hsv(bottom_right_region), RED_RANGE):
+            square_size = int(cell_width * 0.27)
+            cv2.rectangle(
+                cell,
+                (cell_width - square_size, cell_height - square_size),
+                (cell_width, cell_height),
+                (255, 255, 255),
+                -1,
+            )
+
+        top_left_region = cell[shift_y : shift_y + corner_size, shift_x : shift_x + corner_size]
+        bottom_left_region = cell[
+            -corner_size - shift_y : -shift_y, shift_x : shift_x + corner_size
+        ]
+        multiplier = None
+        if is_color_in_range(avg_hsv(top_left_region), ORANGE_RANGE):
+            multiplier = "x2"
+        elif is_color_in_range(avg_hsv(top_left_region), PURPLE_RANGE):
+            multiplier = "x3"
+        elif is_color_in_range(avg_hsv(bottom_left_region), ORANGE_RANGE):
+            multiplier = "c2"
+        elif is_color_in_range(avg_hsv(bottom_left_region), PURPLE_RANGE):
+            multiplier = "c3"
+        if multiplier:
+            detected_multipliers[(row, col)] = multiplier
+            large_corner = int(cell_width * 0.58)
+            pts = (
+                np.array([[0, 0], [large_corner, 0], [0, large_corner]], np.int32)
+                if multiplier in ["x2", "x3"]
+                else np.array(
+                    [
+                        [0, cell_height],
+                        [large_corner, cell_height],
+                        [0, cell_height - large_corner],
+                    ],
+                    np.int32,
+                )
+            )
+            cv2.fillPoly(cell, [pts], (255, 255, 255))
+        tensor = np.expand_dims(img_to_array(cv2.resize(cell, (64, 64))) / 255.0, axis=0)
+        cells_batch.append(tensor)
+        mapping.append((row, col, multiplier))
+        model_inputs[(row, col)] = tensor
+
+    predictions = model.predict(np.vstack(cells_batch))
+    final_predictions = {(row, col): predictions[i] for i, (row, col, _) in enumerate(mapping)}
+    update_cells, update_mapping = [], []
+    for row, col in detected_multipliers:
+        x0, y0, x1, y1 = (
+            col * cell_width,
+            row * cell_height,
+            (col + 1) * cell_width,
+            (row + 1) * cell_height,
+        )
+        tensor = np.expand_dims(
+            img_to_array(cv2.resize(cropped_image[y0:y1, x0:x1], (64, 64))) / 255.0, axis=0
+        )
+        update_cells.append(tensor)
+        update_mapping.append((row, col))
+        model_inputs[(row, col)] = tensor
+    if update_cells:
+        update_predictions = model.predict(np.vstack(update_cells))
+        final_predictions.update(
+            {position: update_predictions[i] for i, position in enumerate(update_mapping)}
+        )
+
+    board = [[(None, None) for _ in range(GRID_SIZE)] for _ in range(GRID_SIZE)]
+    for row, col, multiplier in mapping:
+        board[row][col] = (CLASS_LABELS[int(np.argmax(final_predictions[(row, col)]))], multiplier)
+    return {
+        "board": board,
+        "coordinates": coordinates,
+        "raw_cells": raw_cells,
+        "model_inputs": model_inputs,
+        "predictions": final_predictions,
+        "multipliers": detected_multipliers,
+    }
+
 
 def process_image(image_path, model, trie):
     overall_start = time.perf_counter()
@@ -147,239 +321,60 @@ def process_image(image_path, model, trie):
 
     # Crop
     t0 = time.perf_counter()
-    cropped_image = None
-
-    use_smart = os.getenv("SMART_CROP", "1") not in {"0", "false", "False"}
     debug_dir = os.getenv("SMART_CROP_DEBUG_DIR")
-    debug = bool(debug_dir)
-
-    if use_smart:
-        roi_top = float(os.getenv("SMART_CROP_ROI_TOP", "0.18"))
-        roi_bottom = float(os.getenv("SMART_CROP_ROI_BOTTOM", "0.92"))
-        s_max = int(os.getenv("SMART_CROP_S_MAX", "60"))
-        v_min = int(os.getenv("SMART_CROP_V_MIN", "200"))
-        min_tiles = int(os.getenv("SMART_CROP_MIN_TILES", "15"))
-        pad_frac = float(os.getenv("SMART_CROP_PAD_FRAC", "0.02"))
-
-        bbox, info, mask, candidates, cluster = find_board_bbox(
-            image,
-            roi_top=roi_top,
-            roi_bottom=roi_bottom,
-            s_max=s_max,
-            v_min=v_min,
-            min_tiles=min_tiles,
-            pad_frac=pad_frac,
-            debug=debug,
+    cropped_image, crop_details = crop_board_image(image, debug=bool(debug_dir))
+    info = crop_details.get("info", {})
+    bbox = crop_details.get("bbox")
+    if crop_details["smart_crop_used"]:
+        logger.info(
+            "smart_crop ok bbox=(%d,%d)-(%d,%d) tiles=%d candidates=%d",
+            bbox.x0,
+            bbox.y0,
+            bbox.x1,
+            bbox.y1,
+            int(info.get("cluster", 0.0)),
+            int(info.get("candidates", 0.0)),
         )
-
-        if bbox is not None:
-            cropped_image = image[bbox.y0 : bbox.y1, bbox.x0 : bbox.x1]
-            logger.info(
-                "smart_crop ok bbox=(%d,%d)-(%d,%d) tiles=%d candidates=%d",
-                bbox.x0,
-                bbox.y0,
-                bbox.x1,
-                bbox.y1,
-                int(info.get("cluster", 0.0)),
-                int(info.get("candidates", 0.0)),
-            )
-
-            if debug_dir:
-                os.makedirs(debug_dir, exist_ok=True)
-                rid = "-"
-                if request_id_var is not None:
-                    rid = request_id_var.get() or "-"
-                tag = f"{int(time.time() * 1000)}_{rid}"
-
-                overlay = image.copy()
-                for r in candidates:
-                    cv2.rectangle(overlay, (r.x0, r.y0), (r.x1, r.y1), (0, 0, 255), 1)
-                for r in cluster:
-                    cv2.rectangle(overlay, (r.x0, r.y0), (r.x1, r.y1), (0, 255, 0), 2)
-                cv2.rectangle(
-                    overlay,
-                    (bbox.x0, bbox.y0),
-                    (bbox.x1, bbox.y1),
-                    (255, 0, 0),
-                    3,
-                )
-
-                cv2.imwrite(os.path.join(debug_dir, f"{tag}_norm.png"), image)
-                if mask is not None:
-                    cv2.imwrite(os.path.join(debug_dir, f"{tag}_mask.png"), mask)
-                cv2.imwrite(os.path.join(debug_dir, f"{tag}_overlay.png"), overlay)
-                cv2.imwrite(os.path.join(debug_dir, f"{tag}_crop.png"), cropped_image)
-        else:
-            logger.info(
-                "smart_crop miss tiles=%d candidates=%d",
-                int(info.get("cluster", 0.0)),
-                int(info.get("candidates", 0.0)),
-            )
-
-    if cropped_image is None:
-        # Fallback hardcoded coordinates (works for a subset of layouts)
-        x_start_crop, y_start_crop, x_end_crop, y_end_crop = 37, 445, 552, 975
-        cropped_image = manual_crop(image, x_start_crop, y_start_crop, x_end_crop, y_end_crop)
+        if debug_dir:
+            os.makedirs(debug_dir, exist_ok=True)
+            rid = request_id_var.get() if request_id_var is not None else None
+            tag = f"{int(time.time() * 1000)}_{rid or '-'}"
+            overlay = image.copy()
+            for rect in crop_details["candidates"]:
+                cv2.rectangle(overlay, (rect.x0, rect.y0), (rect.x1, rect.y1), (0, 0, 255), 1)
+            for rect in crop_details["cluster"]:
+                cv2.rectangle(overlay, (rect.x0, rect.y0), (rect.x1, rect.y1), (0, 255, 0), 2)
+            cv2.rectangle(overlay, (bbox.x0, bbox.y0), (bbox.x1, bbox.y1), (255, 0, 0), 3)
+            cv2.imwrite(os.path.join(debug_dir, f"{tag}_norm.png"), image)
+            if crop_details["mask"] is not None:
+                cv2.imwrite(os.path.join(debug_dir, f"{tag}_mask.png"), crop_details["mask"])
+            cv2.imwrite(os.path.join(debug_dir, f"{tag}_overlay.png"), overlay)
+            cv2.imwrite(os.path.join(debug_dir, f"{tag}_crop.png"), cropped_image)
+    elif crop_details["smart_crop_enabled"]:
+        logger.info(
+            "smart_crop miss tiles=%d candidates=%d",
+            int(info.get("cluster", 0.0)),
+            int(info.get("candidates", 0.0)),
+        )
 
     _log_stage("crop_image", t0)
 
-    # Split into 5x5
+    # Keep recognition mechanics shared with the local diagnostic tool.  The
+    # helper preserves the historical two-pass multiplier behaviour exactly.
     t0 = time.perf_counter()
-    grid_size = 5
-    image_height, image_width, _ = cropped_image.shape
-    cell_height = image_height // grid_size
-    cell_width = image_width // grid_size
-    _log_stage("split_grid", t0)
+    recognition = recognize_board_cells(cropped_image, model)
+    _log_stage("recognize_cells", t0)
 
-    cells_batch = []
-    cells_mapping = []
-    board = []
-
-    detected_multipliers = {}
-
-    for row in range(grid_size):
-        row_data = []
-        for col in range(grid_size):
-            cell_x_start = col * cell_width
-            cell_y_start = row * cell_height
-            cell_x_end = (col + 1) * cell_width
-            cell_y_end = (row + 1) * cell_height
-
-            cell = cropped_image[cell_y_start:cell_y_end, cell_x_start:cell_x_end]
-
-            shift_x = int(cell_width * 0.15)
-            shift_y = int(cell_height * 0.15)
-            corner_size = int(cell_width * 0.2)
-
-            # mask bottom-right red region if detected
-            bottom_right_region = cell[
-                -corner_size - shift_y : -shift_y, -corner_size - shift_x : -shift_x
-            ]
-            bottom_right_hsv = avg_hsv(bottom_right_region)
-            if is_color_in_range(bottom_right_hsv, RED_RANGE):
-                square_size = int(cell_width * 0.27)
-                cv2.rectangle(
-                    cell,
-                    (cell_width - square_size, cell_height - square_size),
-                    (cell_width, cell_height),
-                    (255, 255, 255),
-                    -1,
-                )
-
-            # detect multipliers by corner colors
-            top_left_region = cell[shift_y : shift_y + corner_size, shift_x : shift_x + corner_size]
-            bottom_left_region = cell[
-                -corner_size - shift_y : -shift_y, shift_x : shift_x + corner_size
-            ]
-
-            top_left_hsv = avg_hsv(top_left_region)
-            bottom_left_hsv = avg_hsv(bottom_left_region)
-
-            multiplier = None
-            if is_color_in_range(top_left_hsv, ORANGE_RANGE):
-                multiplier = "x2"
-            elif is_color_in_range(top_left_hsv, PURPLE_RANGE):
-                multiplier = "x3"
-            elif is_color_in_range(bottom_left_hsv, ORANGE_RANGE):
-                multiplier = "c2"
-            elif is_color_in_range(bottom_left_hsv, PURPLE_RANGE):
-                multiplier = "c3"
-
-            if multiplier:
-                detected_multipliers[(row, col)] = multiplier
-                large_corner = int(cell_width * 0.58)
-                if multiplier in ["x2", "x3"]:
-                    pts = np.array([[0, 0], [large_corner, 0], [0, large_corner]], np.int32)
-                else:
-                    pts = np.array(
-                        [
-                            [0, cell_height],
-                            [large_corner, cell_height],
-                            [0, cell_height - large_corner],
-                        ],
-                        np.int32,
-                    )
-                cv2.fillPoly(cell, [pts], (255, 255, 255))
-
-            cell_resized = cv2.resize(cell, (64, 64))
-            cell_array = img_to_array(cell_resized) / 255.0
-            cell_array = np.expand_dims(cell_array, axis=0)
-
-            row_data.append((None, multiplier))
-            cells_batch.append(cell_array)
-            cells_mapping.append((row, col, multiplier))
-
-        board.append(row_data)
-
-    # single batch predict for 25 cells
     t0 = time.perf_counter()
-    batch = np.vstack(cells_batch)
-    predictions = model.predict(batch)
-
-    for i, (row, col, multiplier) in enumerate(cells_mapping):
-        predicted_class = int(np.argmax(predictions[i]))
-        letter = CLASS_LABELS[predicted_class]
-        board[row][col] = (letter, multiplier)
-        logger.debug("cell row=%d col=%d letter=%s multiplier=%s", row, col, letter, multiplier)
-    _log_stage("predict_cells", t0)
-
-    # re-predict cells that had multipliers (second pass)
-    t0 = time.perf_counter()
-    update_cells = []
-    update_mapping = []
-
-    for (row, col), _multiplier in detected_multipliers.items():
-        cell_x_start = col * cell_width
-        cell_y_start = row * cell_height
-        cell_x_end = (col + 1) * cell_width
-        cell_y_end = (row + 1) * cell_height
-
-        cell = cropped_image[cell_y_start:cell_y_end, cell_x_start:cell_x_end]
-        cell_resized = cv2.resize(cell, (64, 64))
-        cell_array = img_to_array(cell_resized) / 255.0
-        cell_array = np.expand_dims(cell_array, axis=0)
-
-        update_cells.append(cell_array)
-        update_mapping.append((row, col))
-
-    if update_cells:
-        update_batch = np.vstack(update_cells)
-        update_predictions = model.predict(update_batch)
-        for i, (row, col) in enumerate(update_mapping):
-            predicted_class = int(np.argmax(update_predictions[i]))
-            new_letter = CLASS_LABELS[predicted_class]
-            board[row][col] = (new_letter, detected_multipliers[(row, col)])
-            logger.debug(
-                "cell updated row=%d col=%d letter=%s multiplier=%s",
-                row,
-                col,
-                new_letter,
-                detected_multipliers[(row, col)],
-            )
-
-    _log_stage("update_cells", t0)
-
-    # build Cyrillic board
-    t0 = time.perf_counter()
-    board_rus = []
-    for row in board:
-        row_rus = []
-        for letter, multiplier in row:
-            rus_letter = TRANSLIT_TO_RUS.get(letter, letter)
-            row_rus.append((rus_letter, multiplier))
-        board_rus.append(row_rus)
+    board_rus = [
+        [(TRANSLIT_TO_RUS.get(letter, letter), multiplier) for letter, multiplier in row]
+        for row in recognition["board"]
+    ]
     _log_stage("build_board_rus", t0)
 
-    # Find words on board using Trie
     t0 = time.perf_counter()
-    found_words = find_words(board_rus, trie=trie, grid_size=grid_size)
+    found_words = find_words(board_rus, trie=trie, grid_size=GRID_SIZE)
     _log_stage("find_words", t0)
-
-    # sort results
-    t0 = time.perf_counter()
     sorted_words = sorted(found_words.items(), key=lambda x: x[1], reverse=True)
-    _log_stage("sort_results", t0)
-
     logger.info("timing stage=total seconds=%.3f", time.perf_counter() - overall_start)
-
     return {"words": [{"name": word, "score": score} for word, score in sorted_words]}
