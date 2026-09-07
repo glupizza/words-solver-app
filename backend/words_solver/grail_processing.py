@@ -11,10 +11,21 @@ from .image_processing import TRANSLIT_TO_RUS, crop_board_image, recognize_board
 IMAGE_COUNT = 5
 MAX_WORDS = 500
 MAX_SERIES = 50
-MAX_SERIES_WORDS = 8
+MAX_SERIES_WORDS = 10
+MIN_SERIES_SUFFIX_LENGTH = 6
 MIN_WORD_SCORE = 400
 MIN_GOOD_WORDS = 3
 NESTED_TOP5_PRESERVE_RATIO = 0.95
+PRIORITY_SERIES_SUFFIXES = (
+    "\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435",
+    "\u0438\u0440\u043e\u0432\u0430\u0442\u044c\u0441\u044f",
+    "\u0438\u0440\u043e\u0432\u0430\u0442\u044c",
+    "\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0439",
+    "\u0438\u0440\u043e\u0432\u043a\u0430",
+    "\u0441\u0442\u0440\u043e\u0435\u043d\u0438\u0435",
+    "\u0432\u0430\u0440\u0438\u0432\u0430\u043d\u0438\u0435",
+    "\u043e\u0431\u0440\u0430\u0437\u043e\u0432\u0430\u043d\u0438\u0435",
+)
 
 
 class GrailMultiplierConflict(ValueError):
@@ -98,7 +109,8 @@ def _series_metrics(suffix, suffix_path, members):
     }
 
 
-def build_series(results, min_suffix_length=4):
+def build_series(results, min_suffix_length=MIN_SERIES_SUFFIX_LENGTH):
+    min_suffix_length = max(min_suffix_length, MIN_SERIES_SUFFIX_LENGTH)
     candidates = {}
     for result in results.values():
         word = result["name"]
@@ -107,7 +119,10 @@ def build_series(results, min_suffix_length=4):
             candidates.setdefault((word[-length:], path[-length:]), []).append(result)
     groups = [item for item in candidates.items() if len(item[1]) >= 2]
     specific = {}
+    priority_candidates = {}
     for (suffix, path), members in groups:
+        if suffix in PRIORITY_SERIES_SUFFIXES:
+            priority_candidates[(suffix, path)] = (suffix, path, members)
         key = frozenset(member["name"] for member in members)
         existing = specific.get(key)
         if existing is None or (len(suffix), suffix, path) > (
@@ -116,9 +131,14 @@ def build_series(results, min_suffix_length=4):
             existing[1],
         ):
             specific[key] = (suffix, path, members)
+    selected_candidates = list(specific.values())
+    selected_keys = {(suffix, path) for suffix, path, _members in selected_candidates}
+    selected_candidates.extend(
+        candidate for key, candidate in priority_candidates.items() if key not in selected_keys
+    )
     return [
         _series_metrics(suffix, path, [m for m in members if m["score"] >= MIN_WORD_SCORE])
-        for suffix, path, members in specific.values()
+        for suffix, path, members in selected_candidates
         if sum(m["score"] >= MIN_WORD_SCORE for m in members) >= MIN_GOOD_WORDS
     ]
 
@@ -145,7 +165,7 @@ def _suppresses(longer, shorter):
     )
 
 
-def select_series(results, min_suffix_length=4):
+def select_series(results, min_suffix_length=MIN_SERIES_SUFFIX_LENGTH):
     candidates = build_series(results, min_suffix_length)
 
     ordered = sorted(
@@ -155,15 +175,39 @@ def select_series(results, min_suffix_length=4):
 
     selected = []
     for candidate in ordered:
-        if any(_suppresses(longer, candidate) for longer in selected):
+        if candidate["suffix"] not in PRIORITY_SERIES_SUFFIXES and any(
+            _suppresses(longer, candidate) for longer in selected
+        ):
             continue
         selected.append(candidate)
 
-    selected.sort(key=_ranking_key)
-    return selected[:MAX_SERIES]
+    priority = [
+        candidate
+        for suffix in PRIORITY_SERIES_SUFFIXES
+        for candidate in selected
+        if candidate["suffix"] == suffix
+    ]
+    normal = sorted(
+        (
+            candidate
+            for candidate in selected
+            if candidate["suffix"] not in PRIORITY_SERIES_SUFFIXES
+        ),
+        key=_ranking_key,
+    )
+    return (priority + normal)[:MAX_SERIES]
 
 
 def serialize_series(series):
+    score_ranked_members = series["good_members"]
+    members = (
+        score_ranked_members
+        if series["suffix"] in PRIORITY_SERIES_SUFFIXES
+        else score_ranked_members[:MAX_SERIES_WORDS]
+    )
+    members = sorted(
+        members, key=lambda member: (len(member["name"]), member["score"], member["name"])
+    )
     return {
         "suffix": series["suffix"],
         "suffix_path": series["suffix_path"],
@@ -171,7 +215,7 @@ def serialize_series(series):
         "best_score": series["best_score"],
         "top3_sum": series["top3_sum"],
         "top5_sum": series["top5_sum"],
-        "words": [serialize_word(member) for member in series["good_members"][:MAX_SERIES_WORDS]],
+        "words": [serialize_word(member) for member in members],
     }
 
 

@@ -8,10 +8,9 @@
         v-for="cell in cells"
         :key="cell.position"
         class="path-cell"
-        :class="{ used: cell.used }"
+        :class="{ used: cell.used, suffix: cell.suffix, start: cell.start }"
       >
         <template v-if="cell.used">
-          <span class="path-order">{{ cell.order }}</span>
           <span class="path-letter">{{ cell.letter }}</span>
         </template>
       </div>
@@ -31,14 +30,41 @@ export default {
       type: Array,
       required: true,
     },
+    suffix: {
+      type: String,
+      default: '',
+    },
   },
   computed: {
+    wordCharacters() {
+      const word = typeof this.word === 'string' ? this.word : '';
+      return Array.from(word);
+    },
+    suffixStartIndex() {
+      const word = typeof this.word === 'string' ? this.word : '';
+      const suffix = typeof this.suffix === 'string' ? this.suffix : '';
+      const wordCharacters = Array.from(word);
+      const suffixCharacters = Array.from(suffix);
+      if (
+        !Array.isArray(this.path)
+        || !word
+        || !suffix
+        || !suffixCharacters.length
+        || this.path.length !== wordCharacters.length
+        || !word.endsWith(suffix)
+      ) {
+        return null;
+      }
+      return wordCharacters.length - suffixCharacters.length;
+    },
     usedCells() {
-      return this.path.reduce((cells, position, index) => {
+      const path = Array.isArray(this.path) ? this.path : [];
+      return path.reduce((cells, position, index) => {
         if (Number.isInteger(position) && position >= 0 && position < 25) {
           cells[position] = {
-            letter: Array.from(this.word)[index] || '',
-            order: index + 1,
+            letter: this.wordCharacters[index] || '',
+            suffix: this.suffixStartIndex !== null && index >= this.suffixStartIndex,
+            start: index === 0,
           };
         }
         return cells;
@@ -52,7 +78,8 @@ export default {
       }));
     },
     points() {
-      return this.path
+      const path = Array.isArray(this.path) ? this.path : [];
+      return path
         .filter((position) => Number.isInteger(position) && position >= 0 && position < 25)
         .map((position) => `${(position % 5) * 50 + 25},${Math.floor(position / 5) * 50 + 25}`)
         .join(' ');
@@ -108,16 +135,17 @@ export default {
   box-shadow: 0 2px 8px rgba(75, 99, 130, 0.22);
 }
 
-.path-letter {
-  font-size: clamp(0.78rem, 4vw, 1rem);
-  font-weight: 900;
+.path-cell.used.suffix {
+  border-color: var(--accent-hover);
+  background: var(--accent-hover);
 }
 
-.path-order {
-  position: absolute;
-  top: 2px;
-  left: 4px;
-  font-size: 0.58rem;
-  font-weight: 800;
+.path-cell.used.start {
+  box-shadow: inset 0 0 0 3px var(--text), 0 2px 8px rgba(75, 99, 130, 0.22);
+}
+
+.path-letter {
+  font-size: clamp(1rem, 5vw, 1.3rem);
+  font-weight: 900;
 }
 </style>

@@ -161,14 +161,22 @@
             <div v-if="grailSeries.length === 0" class="empty">Серии не найдены</div>
             <div v-else class="series-list">
               <article v-for="(series, seriesIndex) in grailSeries" :key="`${series.suffix}-${seriesIndex}`" class="series-card">
-                <h3>{{ series.suffix }}</h3>
-                <p class="series-metrics">Хороших слов: {{ series.good_count }} · Топ-3: {{ series.top3_sum }} · Топ-5: {{ series.top5_sum }}</p>
-                <div class="series-words">
+                <button
+                  type="button"
+                  class="series-header"
+                  :aria-expanded="expandedSeries === seriesIndex"
+                  @click="toggleSeries(seriesIndex)"
+                >
+                  <strong>{{ series.suffix }}</strong>
+                  <span>{{ series.words.length }} слов</span>
+                  <span>{{ series.top5_sum }} очков</span>
+                </button>
+                <div v-if="expandedSeries === seriesIndex" class="series-words">
                   <article v-for="(word, wordIndex) in series.words" :key="`${word.name}-${wordIndex}`" class="grail-word-card compact-word-card">
                     <button type="button" class="grail-word-button" :aria-expanded="expandedSeriesWord === `${seriesIndex}-${wordIndex}`" @click="toggleSeriesWord(seriesIndex, wordIndex)">
                       <strong>{{ word.name }}</strong><span class="score">{{ word.score }}</span>
                     </button>
-                    <GrailPathMap v-if="expandedSeriesWord === `${seriesIndex}-${wordIndex}`" :word="word.name" :path="word.path" />
+                    <GrailPathMap v-if="expandedSeriesWord === `${seriesIndex}-${wordIndex}`" :word="word.name" :path="word.path" :suffix="series.suffix" />
                   </article>
                 </div>
               </article>
@@ -203,6 +211,7 @@ export default {
       grailHasSearched: false,
       grailTab: 'series',
       expandedBestWord: null,
+      expandedSeries: null,
       expandedSeriesWord: null,
     };
   },
@@ -232,6 +241,7 @@ export default {
       this.grailWords = [];
       this.grailSeries = [];
       this.expandedBestWord = null;
+      this.expandedSeries = null;
       this.expandedSeriesWord = null;
 
       event.target.value = '';
@@ -245,6 +255,7 @@ export default {
       this.grailWords = [];
       this.grailSeries = [];
       this.expandedBestWord = null;
+      this.expandedSeries = null;
       this.expandedSeriesWord = null;
     },
     clearGrailPreviews() {
@@ -252,6 +263,10 @@ export default {
     },
     toggleBestWord(index) {
       this.expandedBestWord = this.expandedBestWord === index ? null : index;
+    },
+    toggleSeries(index) {
+      this.expandedSeries = this.expandedSeries === index ? null : index;
+      this.expandedSeriesWord = null;
     },
     toggleSeriesWord(seriesIndex, wordIndex) {
       const key = `${seriesIndex}-${wordIndex}`;
@@ -297,6 +312,7 @@ export default {
       this.grailWords = [];
       this.grailSeries = [];
       this.expandedBestWord = null;
+      this.expandedSeries = null;
       this.expandedSeriesWord = null;
       const formData = new FormData();
       this.grailFiles.forEach((item) => formData.append('images', item.file));
@@ -732,27 +748,34 @@ button:focus-visible,
   padding-bottom: 10px;
 }
 
-.series-card {
+.series-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  width: 100%;
+  gap: 3px 10px;
   padding: 10px;
+  border: 0;
+  border-radius: 10px;
+  color: var(--muted);
+  background: transparent;
+  font-size: 0.84rem;
+  text-align: left;
+  cursor: pointer;
 }
 
-.series-card h3 {
-  margin: 0;
+.series-header strong {
+  min-width: 0;
+  grid-row: span 2;
+  align-self: center;
   color: var(--text);
   overflow-wrap: anywhere;
   font-size: 1rem;
 }
 
-.series-metrics {
-  margin: 4px 0 8px;
-  color: var(--muted);
-  font-size: 0.84rem;
-  overflow-wrap: anywhere;
-}
-
 .series-words {
   display: grid;
   gap: 6px;
+  padding: 0 10px 10px;
 }
 
 .compact-word-card {
