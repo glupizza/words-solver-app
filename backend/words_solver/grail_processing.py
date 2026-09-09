@@ -103,6 +103,15 @@ def unique_letter_statistics(cell_letters):
     }
 
 
+def priority_dictionary_words(words):
+    """Return dictionary entries eligible for the startup priority Trie."""
+    return [
+        word
+        for word in words
+        if isinstance(word, str) and word.lower().endswith(PRIORITY_SERIES_SUFFIXES)
+    ]
+
+
 def serialize_word(result):
     return {
         "name": result["name"],
@@ -483,10 +492,10 @@ def _recognize_path(path, model):
     return letters, multipliers
 
 
-def process_grail_images(paths, model, trie):
+def prepare_grail_board(paths, model):
+    """Recognize and merge a five-image Grail board exactly once."""
     if len(paths) != IMAGE_COUNT:
         raise ValueError("exactly five images are required")
-    started = time.perf_counter()
     ocr_started = time.perf_counter()
     recognized = [_recognize_path(path, model) for path in paths]
     ocr_seconds = time.perf_counter() - ocr_started
@@ -494,12 +503,42 @@ def process_grail_images(paths, model, trie):
     letters = merge_cell_letters([item[0] for item in recognized])
     multipliers, _sightings = merge_multipliers([item[1] for item in recognized])
     merge_seconds = time.perf_counter() - merge_started
+    return {
+        "cell_letters": letters,
+        "multipliers": multipliers,
+        "timings": {
+            "ocr_all_5_seconds": ocr_seconds,
+            "merge_seconds": merge_seconds,
+        },
+        "debug": {
+            "cell_letters": letters,
+            "multipliers": multipliers,
+            "unique_letter_statistics": unique_letter_statistics(letters),
+        },
+    }
+
+
+def search_grail_board(cell_letters, multipliers, trie):
+    """Run the existing Grail DFS and series selection on a prepared board."""
     search_started = time.perf_counter()
-    results = find_grail_words(letters, multipliers, trie)
+    results = find_grail_words(cell_letters, multipliers, trie)
     search_seconds = time.perf_counter() - search_started
     series_started = time.perf_counter()
     series = select_series(results)
     series_seconds = time.perf_counter() - series_started
+    return (
+        results,
+        series,
+        {
+            "grail_search_seconds": search_seconds,
+            "series_processing_seconds": series_seconds,
+        },
+    )
+
+
+def grail_result_from_search(prepared, results, series, search_timings):
+    """Build the established Grail response shape from prepared/search data."""
+    timings = {**prepared["timings"], **search_timings}
     return {
         "words": top_words(results),
         "series": [serialize_series(item) for item in series],
@@ -509,15 +548,18 @@ def process_grail_images(paths, model, trie):
             "returned_series": len(series),
         },
         "timings": {
-            "ocr_all_5_seconds": ocr_seconds,
-            "merge_seconds": merge_seconds,
-            "grail_search_seconds": search_seconds,
-            "series_processing_seconds": series_seconds,
-            "request_core_seconds": time.perf_counter() - started,
+            **timings,
         },
-        "debug": {
-            "cell_letters": letters,
-            "multipliers": multipliers,
-            "unique_letter_statistics": unique_letter_statistics(letters),
-        },
+        "debug": prepared["debug"],
     }
+
+
+def process_grail_images(paths, model, trie):
+    started = time.perf_counter()
+    prepared = prepare_grail_board(paths, model)
+    results, series, search_timings = search_grail_board(
+        prepared["cell_letters"], prepared["multipliers"], trie
+    )
+    result = grail_result_from_search(prepared, results, series, search_timings)
+    result["timings"]["request_core_seconds"] = time.perf_counter() - started
+    return result

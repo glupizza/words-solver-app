@@ -9,6 +9,7 @@ from werkzeug.exceptions import NotFound, RequestEntityTooLarge
 
 from backend.words_solver import metrics
 from backend.words_solver.dictionary import build_trie, load_words
+from backend.words_solver.grail_processing import priority_dictionary_words
 from backend.words_solver.http import error_response, json_response
 from backend.words_solver.logging_config import configure_logging, request_id_var, set_request_id
 from backend.words_solver.model import load_letter_model
@@ -75,13 +76,20 @@ def create_app() -> Flask:
             "status": str(getattr(response, "status_code", 0)),
         }
 
-        metrics.inc("app_http_requests_total", **labels)
+        request_start = getattr(g, "request_start", time.perf_counter())
 
-        elapsed = time.perf_counter() - getattr(g, "request_start", time.perf_counter())
-        metrics.add("app_http_request_duration_seconds_sum", elapsed, **labels)
-        metrics.inc("app_http_request_duration_seconds_count", **labels)
+        def record_request_end():
+            metrics.inc("app_http_requests_total", **labels)
+            elapsed = time.perf_counter() - request_start
+            metrics.add("app_http_request_duration_seconds_sum", elapsed, **labels)
+            metrics.inc("app_http_request_duration_seconds_count", **labels)
+            logger.info("request end status=%s", response.status_code)
 
-        logger.info("request end status=%s", response.status_code)
+        if response.is_streamed:
+            response.call_on_close(record_request_end)
+            return response
+
+        record_request_end()
         return response
 
     @app.teardown_request
@@ -91,8 +99,9 @@ def create_app() -> Flask:
     model = load_letter_model(model_path)
     words = load_words(dictionary_path)
     trie = build_trie(words)
+    priority_trie = build_trie(priority_dictionary_words(words))
 
-    app.register_blueprint(create_routes(model=model, trie=trie))
+    app.register_blueprint(create_routes(model=model, trie=trie, priority_trie=priority_trie))
 
     @app.get("/health")
     def health():

@@ -103,8 +103,18 @@
           </div>
         </div>
 
-        <button class="primary-button" :disabled="grailFiles.length !== 5 || grailLoading" @click="uploadGrailImages">
-          {{ grailLoading ? 'Распознаём 5 полей и ищем слова…' : 'Найти слова' }}
+        <button
+          class="primary-button"
+          :disabled="grailFiles.length !== 5 || grailLoading || grailSearchingRemaining"
+          @click="uploadGrailImages"
+        >
+          {{
+            grailLoading
+              ? 'Распознаём 5 полей и ищем слова…'
+              : grailSearchingRemaining
+                ? 'Ищем остальные серии…'
+                : 'Найти слова'
+          }}
         </button>
       </section>
 
@@ -122,7 +132,10 @@
           {{ grailErrorMessage }}
         </div>
 
-        <template v-if="!grailLoading && grailHasSearched && !grailErrorMessage">
+        <template v-if="!grailLoading && grailHasSearched && (!grailErrorMessage || grailSeries.length)">
+            <div v-if="grailSearchingRemaining" class="grail-progress">
+              Приоритетные серии готовы · ищем остальные…
+            </div>
             <div class="result-tabs" role="tablist" aria-label="Результаты Грааля">
               <button
                 type="button"
@@ -139,6 +152,7 @@
                 role="tab"
                 :aria-selected="grailTab === 'best'"
                 :class="{ active: grailTab === 'best' }"
+                :disabled="grailSearchingRemaining"
                 @click="grailTab = 'best'"
               >
                 Лучшие
@@ -210,6 +224,7 @@ export default {
       grailWords: [],
       grailSeries: [],
       grailLoading: false,
+      grailSearchingRemaining: false,
       grailErrorMessage: '',
       grailHasSearched: false,
       grailTab: 'series',
@@ -217,6 +232,8 @@ export default {
       expandedSeries: null,
       expandedSeriesWord: null,
       viewedWordKeys: {},
+      grailAbortController: null,
+      grailRequestToken: 0,
     };
   },
   methods: {
@@ -228,6 +245,7 @@ export default {
     handleGrailFilesChange(event) {
       const files = Array.from(event.target.files || []);
 
+      this.abortGrailStream();
       this.clearGrailPreviews();
 
       this.grailFiles = files.slice(0, 5).map((file) => ({
@@ -244,6 +262,7 @@ export default {
       this.grailHasSearched = false;
       this.grailWords = [];
       this.grailSeries = [];
+      this.grailSearchingRemaining = false;
       this.expandedBestWord = null;
       this.expandedSeries = null;
       this.expandedSeriesWord = null;
@@ -252,6 +271,7 @@ export default {
       event.target.value = '';
     },
     removeGrailFile(index) {
+      this.abortGrailStream();
       const [removed] = this.grailFiles.splice(index, 1);
       if (removed) URL.revokeObjectURL(removed.preview);
       this.grailSelectionMessage = '';
@@ -259,6 +279,7 @@ export default {
       this.grailHasSearched = false;
       this.grailWords = [];
       this.grailSeries = [];
+      this.grailSearchingRemaining = false;
       this.expandedBestWord = null;
       this.expandedSeries = null;
       this.expandedSeriesWord = null;
@@ -266,6 +287,11 @@ export default {
     },
     clearGrailPreviews() {
       this.grailFiles.forEach((item) => URL.revokeObjectURL(item.preview));
+    },
+    abortGrailStream() {
+      if (this.grailAbortController) this.grailAbortController.abort();
+      this.grailAbortController = null;
+      this.grailRequestToken += 1;
     },
     wordKey(word) {
       return `${word.name || ''}|${Array.isArray(word.path) ? word.path.join(',') : ''}`;
@@ -337,9 +363,15 @@ export default {
       }
     },
     async uploadGrailImages() {
-      if (this.grailFiles.length !== 5 || this.grailLoading) return;
+      if (this.grailFiles.length !== 5 || this.grailLoading || this.grailSearchingRemaining) return;
 
+      this.abortGrailStream();
+      const requestToken = this.grailRequestToken + 1;
+      const controller = new AbortController();
+      this.grailRequestToken = requestToken;
+      this.grailAbortController = controller;
       this.grailLoading = true;
+      this.grailSearchingRemaining = false;
       this.grailErrorMessage = '';
       this.grailHasSearched = false;
       this.grailWords = [];
@@ -352,26 +384,98 @@ export default {
       this.grailFiles.forEach((item) => formData.append('images', item.file));
 
       try {
-        const response = await fetch('/upload-grail', {
+        const response = await fetch('/upload-grail-stream', {
           method: 'POST',
           body: formData,
+          signal: controller.signal,
         });
 
         if (!response.ok) {
-          await this.setGrailErrorFromResponse(response, 'Не удалось обработать изображения');
+          if (requestToken === this.grailRequestToken) {
+            await this.setGrailErrorFromResponse(response, 'Не удалось обработать изображения');
+          }
           return;
         }
 
-        const data = await response.json();
-        this.grailWords = Array.isArray(data.words) ? data.words : [];
-        this.grailSeries = Array.isArray(data.series) ? data.series : [];
+        await this.readGrailStream(response, requestToken);
+
+        if (requestToken === this.grailRequestToken && this.grailSearchingRemaining) {
+          this.grailSearchingRemaining = false;
+          this.grailErrorMessage = 'Не удалось найти остальные серии.';
+        }
+        } catch (error) {
+          if (error && error.name === 'AbortError') return;
+
+          console.error('Grail network error:', error);
+
+          if (requestToken === this.grailRequestToken) {
+            const hasPriorityResults = this.grailSeries.length > 0;
+            this.grailSearchingRemaining = false;
+            this.grailErrorMessage = hasPriorityResults
+              ? 'Не удалось найти остальные серии.'
+              : 'Ошибка сети';
+          }
+        }finally {
+        if (requestToken === this.grailRequestToken) {
+          this.grailLoading = false;
+          this.grailAbortController = null;
+        }
+      }
+    },
+    async readGrailStream(response, requestToken) {
+      const processLine = (line) => {
+        if (!line.trim() || requestToken !== this.grailRequestToken) return;
+        try {
+          this.applyGrailStreamEvent(JSON.parse(line), requestToken);
+        } catch (error) {
+          console.error('Invalid Grail stream event:', error);
+          this.grailErrorMessage = 'Ошибка обработки ответа';
+          this.grailSearchingRemaining = false;
+        }
+      };
+      if (!response.body || !response.body.getReader) {
+        (await response.text()).split('\n').forEach(processLine);
+        return;
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let done = false;
+      while (!done) {
+        const chunk = await reader.read();
+        done = chunk.done;
+        buffer += decoder.decode(chunk.value || new Uint8Array(), { stream: !done });
+        const lines = buffer.split('\n');
+        buffer = lines.pop();
+        lines.forEach(processLine);
+      }
+      if (buffer.trim()) processLine(buffer);
+    },
+    applyGrailStreamEvent(event, requestToken) {
+      if (requestToken !== this.grailRequestToken) return;
+      if (event.type === 'priority') {
+        this.grailSeries = Array.isArray(event.series) ? event.series : [];
         this.grailHasSearched = true;
         this.grailTab = 'series';
-      } catch (error) {
-        console.error('Grail network error:', error);
-        this.grailErrorMessage = 'Ошибка сети';
-      } finally {
         this.grailLoading = false;
+        this.grailSearchingRemaining = true;
+        return;
+      }
+      if (event.type === 'complete') {
+        this.grailWords = Array.isArray(event.words) ? event.words : [];
+        this.grailSeries = Array.isArray(event.series) ? event.series : [];
+        this.grailHasSearched = true;
+        this.grailSearchingRemaining = false;
+        if (this.expandedSeries !== null && this.expandedSeries >= this.grailSeries.length) {
+          this.expandedSeries = null;
+          this.expandedSeriesWord = null;
+        }
+        return;
+      }
+      if (event.type === 'error') {
+        this.grailLoading = false;
+        this.grailSearchingRemaining = false;
+        this.grailErrorMessage = 'Не удалось найти остальные серии.';
       }
     },
     async setErrorFromResponse(response, fallbackMessage) {
@@ -392,6 +496,7 @@ export default {
     },
   },
   beforeUnmount() {
+    this.abortGrailStream();
     this.clearGrailPreviews();
   },
 };
@@ -738,6 +843,18 @@ button:focus-visible,
   color: #ffffff;
   background: var(--accent);
   box-shadow: 0 6px 18px rgba(75, 99, 130, 0.2);
+}
+
+.result-tabs button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+.grail-progress {
+  margin: 0 0 10px;
+  color: var(--muted);
+  font-size: 0.88rem;
+  font-weight: 750;
 }
 
 .grail-word-list,
