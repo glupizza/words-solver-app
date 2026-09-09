@@ -132,6 +132,7 @@ def _series_metrics(suffix, suffix_path, members):
         "best_score": scores[0],
         "top3_sum": sum(scores[:3]),
         "top5_sum": sum(scores[:5]),
+        "average_score": sum(scores) / len(scores),
     }
 
 
@@ -456,6 +457,7 @@ def serialize_series(series):
         "best_score": series["best_score"],
         "top3_sum": series["top3_sum"],
         "top5_sum": series["top5_sum"],
+        "average_score": series["average_score"],
         "words": [serialize_word(member) for member in members],
     }
     if "role" in series:

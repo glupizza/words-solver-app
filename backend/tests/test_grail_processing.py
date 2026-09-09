@@ -237,6 +237,7 @@ def test_priority_series_returns_all_members_and_normal_series_selects_best_ten_
     assert len(priority_words) == 12
     assert len(normal_words) == MAX_SERIES_WORDS
     assert all(word["name"].endswith(normal) for word in normal_words)
+    assert serialized[normal]["average_score"] == sum(range(890, 1001, 10)) / 12
 
 
 def test_display_order_does_not_change_metrics_or_series_ranking():
