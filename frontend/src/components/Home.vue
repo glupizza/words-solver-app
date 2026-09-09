@@ -160,24 +160,27 @@
           <div v-else>
             <div v-if="grailSeries.length === 0" class="empty">Серии не найдены</div>
             <div v-else class="series-list">
-              <article v-for="(series, seriesIndex) in grailSeries" :key="`${series.suffix}-${seriesIndex}`" class="series-card">
+              <article v-for="(series, seriesIndex) in grailSeries" :key="`${series.suffix}-${series.role}-${seriesIndex}`" class="series-card">
                 <button
                   type="button"
                   class="series-header"
                   :aria-expanded="expandedSeries === seriesIndex"
-                  @click="toggleSeries(seriesIndex)"
+                  @click="toggleSeries(seriesIndex, $event)"
                 >
-                  <strong>{{ series.suffix }}</strong>
+                  <strong>{{ series.suffix }}<small v-if="series.role"> · {{ series.role === 'main' ? 'Основная' : 'Выгодная' }}</small></strong>
                   <span>{{ series.words.length }} слов</span>
                   <span>{{ series.top5_sum }} очков</span>
                 </button>
                 <div v-if="expandedSeries === seriesIndex" class="series-words">
-                  <article v-for="(word, wordIndex) in series.words" :key="`${word.name}-${wordIndex}`" class="grail-word-card compact-word-card">
-                    <button type="button" class="grail-word-button" :aria-expanded="expandedSeriesWord === `${seriesIndex}-${wordIndex}`" @click="toggleSeriesWord(seriesIndex, wordIndex)">
+                  <section v-for="(bundle, bundleIndex) in seriesBundles(series)" :key="`${bundle.label}-${bundleIndex}`" class="series-bundle">
+                    <h3>{{ bundle.label }} · {{ bundle.words.length }}</h3>
+                  <article v-for="(word, wordIndex) in bundle.words" :key="`${word.name}-${wordIndex}`" class="grail-word-card compact-word-card">
+                    <button type="button" class="grail-word-button" :aria-expanded="expandedSeriesWord === `${seriesIndex}-${bundleIndex}-${wordIndex}`" @click="toggleSeriesWord(seriesIndex, `${bundleIndex}-${wordIndex}`)">
                       <strong>{{ word.name }}</strong><span class="score">{{ word.score }}</span>
                     </button>
-                    <GrailPathMap v-if="expandedSeriesWord === `${seriesIndex}-${wordIndex}`" :word="word.name" :path="word.path" :suffix="series.suffix" />
+                    <GrailPathMap v-if="expandedSeriesWord === `${seriesIndex}-${bundleIndex}-${wordIndex}`" :word="word.name" :path="word.path" :suffix="series.suffix" />
                   </article>
+                  </section>
                 </div>
               </article>
             </div>
@@ -264,9 +267,28 @@ export default {
     toggleBestWord(index) {
       this.expandedBestWord = this.expandedBestWord === index ? null : index;
     },
-    toggleSeries(index) {
+    toggleSeries(index, event) {
+      const header = event.currentTarget;
+      const beforeTop = header.getBoundingClientRect().top;
       this.expandedSeries = this.expandedSeries === index ? null : index;
       this.expandedSeriesWord = null;
+      this.$nextTick(() => {
+        window.scrollBy(0, header.getBoundingClientRect().top - beforeTop);
+      });
+    },
+    seriesBundles(series) {
+      const suffix = Array.from(series.suffix || '');
+      const bundles = new Map();
+      (series.words || []).forEach((word) => {
+        const chars = Array.from(word.name || '');
+        const prefixLength = chars.length - suffix.length;
+        const link = prefixLength > 0 ? chars[prefixLength - 1] : '';
+        const position = prefixLength > 0 && Array.isArray(word.path) ? word.path[prefixLength - 1] : -1;
+        const key = `${link}|${position}`;
+        if (!bundles.has(key)) bundles.set(key, { label: link ? `${link}${series.suffix}` : series.suffix, words: [] });
+        bundles.get(key).words.push(word);
+      });
+      return Array.from(bundles.values());
     },
     toggleSeriesWord(seriesIndex, wordIndex) {
       const key = `${seriesIndex}-${wordIndex}`;
@@ -772,10 +794,28 @@ button:focus-visible,
   font-size: 1rem;
 }
 
+.series-header small {
+  color: var(--color-warm);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
 .series-words {
   display: grid;
   gap: 6px;
   padding: 0 10px 10px;
+}
+
+.series-bundle + .series-bundle {
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.series-bundle h3 {
+  margin: 0 0 5px;
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 800;
 }
 
 .compact-word-card {

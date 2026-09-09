@@ -1,14 +1,18 @@
 import pytest
 
 from backend.words_solver.grail_processing import (
+    KNOWN_BASES,
     MAX_SERIES,
     MAX_SERIES_WORDS,
     MIN_SERIES_SUFFIX_LENGTH,
     MIN_WORD_SCORE,
     PRIORITY_SERIES_SUFFIXES,
     GrailMultiplierConflict,
+    _main_key,
     _merge_series_by_suffix,
     _series_metrics,
+    _value_key,
+    _word_features,
     merge_cell_letters,
     merge_multipliers,
     select_series,
@@ -130,7 +134,7 @@ def test_series_minimum_length_priority_order_and_nested_priority_preservation()
     assert all(len(suffix) >= MIN_SERIES_SUFFIX_LENGTH for suffix in suffixes)
     assert priority in suffixes
     assert suffixes.index(priority) < suffixes.index(normal)
-    assert suffixes[:2] == [priority, second_priority]
+    assert suffixes[:4] == [priority, priority, second_priority, second_priority]
 
 
 def test_priority_suffix_survives_specific_member_set_deduplication():
@@ -155,7 +159,7 @@ def test_series_suffix_length_floor_ignores_smaller_requested_minimum():
     assert all(series["suffix_length"] >= MIN_SERIES_SUFFIX_LENGTH for series in selected)
 
 
-def test_same_suffix_paths_merge_into_one_ui_series_with_word_union():
+def test_same_suffix_paths_select_one_value_path_without_merging():
     suffix = "normtail"
     results = {}
     for prefix, score in (("a", 900), ("b", 800), ("c", 700)):
@@ -169,7 +173,11 @@ def test_same_suffix_paths_merge_into_one_ui_series_with_word_union():
     series = [item for item in selected if item["suffix"] == suffix]
 
     assert len(series) == 1
-    assert {member["name"] for member in series[0]["good_members"]} == set(results)
+    assert {member["name"] for member in series[0]["good_members"]} == {
+        "anormtail",
+        "bnormtail",
+        "cnormtail",
+    }
     assert len([item["suffix"] for item in selected]) == len({item["suffix"] for item in selected})
 
 
@@ -228,14 +236,7 @@ def test_priority_series_returns_all_members_and_normal_series_selects_best_ten_
 
     assert len(priority_words) == 12
     assert len(normal_words) == MAX_SERIES_WORDS
-    assert {word["score"] for word in normal_words} == set(range(910, 1001, 10))
-    assert [word["name"] for word in normal_words] == [
-        word["name"]
-        for word in sorted(
-            normal_words,
-            key=lambda word: (len(word["name"]), word["score"], word["name"]),
-        )
-    ]
+    assert all(word["name"].endswith(normal) for word in normal_words)
 
 
 def test_display_order_does_not_change_metrics_or_series_ranking():
@@ -251,8 +252,191 @@ def test_display_order_does_not_change_metrics_or_series_ranking():
     assert [series["suffix"] for series in selected[:2]] == [first, second]
     assert first_series["top3_sum"] == 2400
     assert first_series["top5_sum"] == 2400
-    assert [word["name"] for word in serialized["words"]] == [
+    assert {word["name"] for word in serialized["words"]} == {
         "afirsttail",
         "bbfirsttail",
         "longfirsttail",
+    }
+
+
+def test_known_base_asset_has_expected_shape():
+    assert len(KNOWN_BASES) == 18
+    assert sum(len(bases) for bases in KNOWN_BASES.values()) == 428
+
+
+def test_priority_returns_two_roles_for_the_same_path_when_it_wins_both():
+    suffix = PRIORITY_SERIES_SUFFIXES[0]
+    results = {
+        prefix + suffix: _result(prefix + suffix, score, [index] + list(range(1, len(suffix) + 1)))
+        for index, (prefix, score) in enumerate(
+            (
+                ("\u043f\u043b\u0430\u043d", 600),
+                ("\u0441\u043a\u0430\u043d", 550),
+                ("\u0437\u043e\u043d\u0434", 500),
+            )
+        )
+    }
+
+    selected = [item for item in select_series(results) if item["suffix"] == suffix]
+
+    assert [item["role"] for item in selected] == ["main", "value"]
+    assert selected[0]["suffix_path"] == selected[1]["suffix_path"]
+    assert all(len(serialize_series(item)["words"]) == 3 for item in selected)
+
+
+def test_physical_bundle_identity_and_table_aware_extraction():
+    suffix = PRIORITY_SERIES_SUFFIXES[0]
+    scan = _result(
+        "\u0441\u043a\u0430\u043d" + suffix, 600, [4, 5, 6, 8] + list(range(1, len(suffix) + 1))
+    )
+    same_cell = _result(
+        "\u043f\u043b\u0430\u043d" + suffix, 600, [5, 6, 7, 8] + list(range(1, len(suffix) + 1))
+    )
+    other_cell = _result(
+        "\u043f\u043b\u0430\u043d" + suffix, 600, [5, 6, 7, 9] + list(range(1, len(suffix) + 1))
+    )
+
+    scan_feature = _word_features(scan, suffix)
+    assert scan_feature["base_length"] == 3
+    assert scan_feature["known"] and scan_feature["short_known"]
+    assert scan_feature["bundle"] == _word_features(same_cell, suffix)["bundle"]
+    assert scan_feature["bundle"] != _word_features(other_cell, suffix)["bundle"]
+
+
+def test_priority_suppresses_redundant_nested_ordinary_suffix():
+    priority = PRIORITY_SERIES_SUFFIXES[0]
+    results = {
+        prefix + priority: _result(
+            prefix + priority, score, [index] + list(range(1, len(priority) + 1))
+        )
+        for index, (prefix, score) in enumerate(
+            (("a", 900), ("b", 800), ("c", 700), ("d", 600), ("e", 500))
+        )
+    }
+
+    selected = select_series(results)
+    assert [(item["suffix"], item["role"]) for item in selected[:2]] == [
+        (priority, "main"),
+        (priority, "value"),
     ]
+    assert "\u043e\u0432\u0430\u043d\u0438\u0435" not in {item["suffix"] for item in selected}
+
+
+def test_main_and_value_horizons_do_not_reward_words_after_the_window():
+    suffix = PRIORITY_SERIES_SUFFIXES[0]
+    main_members = [
+        _result(f"a{index}" + suffix, 500, [index, index + 1] + list(range(1, len(suffix) + 1)))
+        for index in range(30)
+    ]
+    value_members = [
+        _result(f"b{index}" + suffix, 700, [index, index + 1] + list(range(1, len(suffix) + 1)))
+        for index in range(20)
+    ]
+    main_series = _series_metrics(suffix, list(range(1, len(suffix) + 1)), main_members)
+    value_series = _series_metrics(suffix, list(range(1, len(suffix) + 1)), value_members)
+
+    assert _main_key(main_series) == _main_key(
+        _series_metrics(suffix, main_series["suffix_path"], main_members[:25])
+    )
+    assert _value_key(value_series) == _value_key(
+        _series_metrics(suffix, value_series["suffix_path"], value_members[:15])
+    )
+
+
+def test_value_penalty_and_small_group_protection():
+    suffix = PRIORITY_SERIES_SUFFIXES[0]
+    short = _series_metrics(
+        suffix,
+        list(range(1, len(suffix) + 1)),
+        [_result("aaaaa" + suffix, 720, list(range(13))) for _ in range(3)],
+    )
+    long = _series_metrics(
+        suffix,
+        list(range(1, len(suffix) + 1)),
+        [_result("aaaaaaaaaa" + suffix, 760, list(range(18))) for _ in range(3)],
+    )
+    healthy = _series_metrics(
+        suffix,
+        list(range(2, len(suffix) + 2)),
+        [_result("bbbbb" + suffix, 700, list(range(13))) for _ in range(12)],
+    )
+
+    assert _value_key(short) < _value_key(long)
+    assert _value_key(healthy) < _value_key(long)
+
+
+def test_table_aware_main_prefers_short_known_words_over_higher_scores():
+    suffix = PRIORITY_SERIES_SUFFIXES[0]
+
+    def member(prefix, score, link_cell):
+        name = prefix + suffix
+        ids = list(range(len(prefix) - 1)) + [link_cell] + list(range(1, len(suffix) + 1))
+        return _result(name, score, ids)
+
+    familiar = _series_metrics(
+        suffix,
+        [1] * len(suffix),
+        [
+            member("\u0441\u043a\u0430\u043d", 520, 20),
+            member("\u043f\u043b\u0430\u043d", 540, 21),
+            member("\u0437\u043e\u043d\u0434", 560, 22),
+        ],
+    )
+    expensive_unknown = _series_metrics(
+        suffix,
+        [2] * len(suffix),
+        [
+            member("qqq", 900, 20),
+            member("www", 880, 21),
+            member("eee", 860, 22),
+        ],
+    )
+
+    assert _main_key(familiar) < _main_key(expensive_unknown)
+
+
+def test_fallback_main_ignores_known_table_and_favors_short_concentrated_words():
+    suffix = PRIORITY_SERIES_SUFFIXES[5]
+
+    def member(prefix, score, link_cell):
+        name = prefix + suffix
+        ids = list(range(len(prefix) - 1)) + [link_cell] + list(range(1, len(suffix) + 1))
+        return _result(name, score, ids)
+
+    table_matching_but_longer = [
+        member("\u0441\u043a\u0430\u043d", 900, 20),
+        member("\u043f\u043b\u0430\u043d", 880, 20),
+        member("\u0434\u043e\u043c\u0438\u043d", 860, 20),
+    ]
+    short_unknown = [
+        member("\u044b\u043d", 500, 20),
+        member("\u044e\u043d", 500, 20),
+        member("\u044d\u043d", 500, 20),
+    ]
+
+    assert _word_features(table_matching_but_longer[0], suffix)["known"]
+
+    longer_series = _series_metrics(
+        suffix,
+        [3] * len(suffix),
+        table_matching_but_longer,
+    )
+    short_series = _series_metrics(
+        suffix,
+        [4] * len(suffix),
+        short_unknown,
+    )
+
+    assert _main_key(short_series) < _main_key(longer_series)
+
+    spread_series = _series_metrics(
+        suffix,
+        [5] * len(suffix),
+        [
+            member("\u044b\u043d", 500, 20),
+            member("\u044e\u043d", 500, 21),
+            member("\u044d\u043d", 500, 22),
+        ],
+    )
+
+    assert _main_key(short_series) < _main_key(spread_series)

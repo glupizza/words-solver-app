@@ -1,7 +1,10 @@
 """Reusable production processing for five-image Grail boards."""
 
+import json
 import time
 from collections import Counter
+from pathlib import Path
+from statistics import median
 
 import cv2
 
@@ -15,6 +18,9 @@ MAX_SERIES_WORDS = 10
 MIN_SERIES_SUFFIX_LENGTH = 6
 MIN_WORD_SCORE = 400
 MIN_GOOD_WORDS = 3
+MAIN_EVALUATION_WINDOW = 25
+VALUE_EVALUATION_WINDOW = 15
+VALUE_LENGTH_PENALTY = 20
 NESTED_TOP5_PRESERVE_RATIO = 0.95
 PRIORITY_SERIES_SUFFIXES = (
     "\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435",
@@ -24,8 +30,28 @@ PRIORITY_SERIES_SUFFIXES = (
     "\u0438\u0440\u043e\u0432\u043a\u0430",
     "\u0441\u0442\u0440\u043e\u0435\u043d\u0438\u0435",
     "\u0432\u0430\u0440\u0438\u0432\u0430\u043d\u0438\u0435",
-    "\u043e\u0431\u0440\u0430\u0437\u043e\u0432\u0430\u043d\u0438\u0435",
 )
+TABLE_AWARE_SUFFIXES = PRIORITY_SERIES_SUFFIXES[:5]
+
+
+def _load_known_bases():
+    path = Path(__file__).resolve().parents[1] / "assets" / "grail_known_bases.json"
+    with path.open(encoding="utf-8") as source:
+        data = json.load(source)
+    bases = {
+        link.strip().lower(): {base.strip().lower() for base in values}
+        for link, values in data["link_bases"].items()
+    }
+    if (
+        data.get("suffix") != "\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435"
+        or len(bases) != 18
+        or sum(len(values) for values in bases.values()) != 428
+    ):
+        raise ValueError("invalid grail known-bases asset")
+    return bases
+
+
+KNOWN_BASES = _load_known_bases()
 
 
 class GrailMultiplierConflict(ValueError):
@@ -185,51 +211,245 @@ def _merge_series_by_suffix(series):
     ]
 
 
+def _word_features(member, suffix):
+    word = member["name"]
+    prefix = word[: -len(suffix)] if suffix else word
+    path = tuple(row * GRID_SIZE + col for row, col, _letter in member["path"])
+    if prefix and len(path) >= len(prefix):
+        link_letter = prefix[-1]
+        base = prefix[:-1]
+        link_position = path[len(prefix) - 1]
+        bundle = (link_letter, link_position)
+    else:
+        link_letter = ""
+        base = ""
+        link_position = -1
+        bundle = ("", -1)
+    normalized_link = link_letter.strip().lower()
+    normalized_base = base.strip().lower()
+    known = normalized_link in KNOWN_BASES and normalized_base in KNOWN_BASES[normalized_link]
+    return {
+        "member": member,
+        "name": word,
+        "score": member["score"],
+        "prefix_length": len(prefix),
+        "base_length": len(base),
+        "known": known,
+        "short_known": known and 1 <= len(base) <= 5,
+        "short_any": 1 <= len(base) <= 5,
+        "bundle": bundle,
+    }
+
+
+def _concentration(features):
+    counts = Counter(feature["bundle"] for feature in features)
+    values = sorted(counts.values(), reverse=True)
+    return len(counts), sum(values[:3]) / len(features) if features else 0
+
+
+def _main_window(features, table_aware):
+    if table_aware:
+
+        def key(feature):
+            category = (
+                0
+                if feature["short_known"]
+                else 1
+                if feature["known"]
+                else 2
+                if feature["short_any"]
+                else 3
+            )
+            return category, feature["base_length"], feature["score"], feature["name"]
+    else:
+
+        def key(feature):
+            return feature["prefix_length"], feature["score"], feature["name"]
+
+    return sorted(features, key=key)[:MAIN_EVALUATION_WINDOW]
+
+
+def _value_window(features):
+    def adjusted(feature):
+        return feature["score"] - VALUE_LENGTH_PENALTY * max(feature["prefix_length"] - 5, 0)
+
+    return sorted(
+        features,
+        key=lambda feature: (
+            -adjusted(feature),
+            feature["prefix_length"],
+            -feature["score"],
+            feature["name"],
+        ),
+    )[:VALUE_EVALUATION_WINDOW]
+
+
+def _main_key(series):
+    features = [_word_features(member, series["suffix"]) for member in series["good_members"]]
+    table_aware = series["suffix"] in TABLE_AWARE_SUFFIXES
+    window = _main_window(features, table_aware)
+    distinct, coverage = _concentration(window)
+    scores = [feature["score"] for feature in window]
+    if table_aware:
+        return (
+            -sum(feature["short_known"] for feature in window),
+            -sum(feature["known"] for feature in window),
+            -coverage,
+            distinct,
+            -median(scores),
+            -sum(scores) / len(scores),
+            tuple(series["suffix_path"]),
+        )
+    lengths = [feature["prefix_length"] for feature in window]
+    return (
+        -sum(feature["short_any"] for feature in window),
+        -coverage,
+        distinct,
+        median(lengths),
+        -median(scores),
+        -sum(scores) / len(scores),
+        tuple(series["suffix_path"]),
+    )
+
+
+def _value_key(series):
+    features = [_word_features(member, series["suffix"]) for member in series["good_members"]]
+    window = _value_window(features)
+    adjusted = [
+        feature["score"] - VALUE_LENGTH_PENALTY * max(feature["prefix_length"] - 5, 0)
+        for feature in window
+    ]
+    scores = [feature["score"] for feature in window]
+    distinct, coverage = _concentration(window)
+    value_index = (
+        sum(adjusted)
+        / len(adjusted)
+        * min(len(window), VALUE_EVALUATION_WINDOW)
+        / VALUE_EVALUATION_WINDOW
+    )
+    return (
+        -value_index,
+        -median(adjusted),
+        -sum(scores) / len(scores),
+        -coverage,
+        distinct,
+        tuple(series["suffix_path"]),
+    )
+
+
+def _display_members(series, role):
+    table_aware = series["suffix"] in TABLE_AWARE_SUFFIXES
+    features = [_word_features(member, series["suffix"]) for member in series["good_members"]]
+    window = _main_window(features, table_aware) if role == "main" else _value_window(features)
+    window_counts = Counter(feature["bundle"] for feature in window)
+    window_ids = {id(feature) for feature in window}
+    adjusted = {
+        id(feature): feature["score"] - VALUE_LENGTH_PENALTY * max(feature["prefix_length"] - 5, 0)
+        for feature in features
+    }
+    groups = {}
+    for feature in features:
+        groups.setdefault(feature["bundle"], []).append(feature)
+
+    def word_key(feature):
+        if table_aware:
+            return not feature["known"], feature["base_length"], feature["score"], feature["name"]
+        return feature["prefix_length"], feature["score"], feature["name"]
+
+    def bundle_key(item):
+        bundle, members = item
+        if role == "value":
+            in_window = [member for member in members if id(member) in window_ids]
+            return (
+                -window_counts[bundle],
+                -sum(adjusted[id(member)] for member in in_window),
+                -(
+                    sum(adjusted[id(member)] for member in in_window) / len(in_window)
+                    if in_window
+                    else 0
+                ),
+                -len(members),
+                (bundle[0] + series["suffix"]),
+                bundle[1],
+            )
+        scores = [member["score"] for member in members]
+        if table_aware:
+            return (
+                -window_counts[bundle],
+                -sum(member["short_known"] for member in members),
+                -sum(member["known"] for member in members),
+                -len(members),
+                -median(scores),
+                bundle[0] + series["suffix"],
+                bundle[1],
+            )
+        return (
+            -window_counts[bundle],
+            -len(members),
+            median(member["prefix_length"] for member in members),
+            -median(scores),
+            bundle[0] + series["suffix"],
+            bundle[1],
+        )
+
+    return [
+        member["member"]
+        for _bundle, members in sorted(groups.items(), key=bundle_key)
+        for member in sorted(members, key=word_key)
+    ]
+
+
+def _with_role(series, role):
+    unique = {}
+    for member in series["good_members"]:
+        previous = unique.get(member["name"])
+        if previous is None or member["score"] > previous["score"]:
+            unique[member["name"]] = member
+    selected = _series_metrics(series["suffix"], series["suffix_path"], unique.values())
+    selected["role"] = role
+    selected["display_members"] = _display_members(selected, role)
+    return selected
+
+
 def select_series(results, min_suffix_length=MIN_SERIES_SUFFIX_LENGTH):
     candidates = build_series(results, min_suffix_length)
+    priority = []
+    for suffix in PRIORITY_SERIES_SUFFIXES:
+        paths = [candidate for candidate in candidates if candidate["suffix"] == suffix]
+        if paths:
+            priority.extend(
+                (
+                    _with_role(min(paths, key=_main_key), "main"),
+                    _with_role(min(paths, key=_value_key), "value"),
+                )
+            )
 
     ordered = sorted(
-        candidates,
-        key=lambda series: (-series["suffix_length"],) + _ranking_key(series),
+        candidates, key=lambda series: (-series["suffix_length"],) + _ranking_key(series)
     )
-
-    selected = []
+    suppressors = []
+    protected = []
     for candidate in ordered:
-        if candidate["suffix"] not in PRIORITY_SERIES_SUFFIXES and any(
-            _suppresses(longer, candidate) for longer in selected
-        ):
+        if candidate["suffix"] in PRIORITY_SERIES_SUFFIXES:
+            suppressors.append(candidate)
             continue
-        selected.append(candidate)
-
-    selected = _merge_series_by_suffix(selected)
-    priority = [
-        candidate
-        for suffix in PRIORITY_SERIES_SUFFIXES
-        for candidate in selected
-        if candidate["suffix"] == suffix
-    ]
-    normal = sorted(
-        (
-            candidate
-            for candidate in selected
-            if candidate["suffix"] not in PRIORITY_SERIES_SUFFIXES
-        ),
-        key=_ranking_key,
-    )
+        if any(_suppresses(longer, candidate) for longer in suppressors):
+            continue
+        suppressors.append(candidate)
+        protected.append(candidate)
+    normal = []
+    for suffix in sorted({candidate["suffix"] for candidate in protected}):
+        paths = [candidate for candidate in protected if candidate["suffix"] == suffix]
+        normal.append(_with_role(min(paths, key=_value_key), "value"))
+    normal.sort(key=_ranking_key)
     return (priority + normal)[:MAX_SERIES]
 
 
 def serialize_series(series):
-    score_ranked_members = series["good_members"]
-    members = (
-        score_ranked_members
-        if series["suffix"] in PRIORITY_SERIES_SUFFIXES
-        else score_ranked_members[:MAX_SERIES_WORDS]
-    )
-    members = sorted(
-        members, key=lambda member: (len(member["name"]), member["score"], member["name"])
-    )
-    return {
+    members = series.get("display_members", series["good_members"])
+    if series["suffix"] not in PRIORITY_SERIES_SUFFIXES:
+        members = members[:MAX_SERIES_WORDS]
+    payload = {
         "suffix": series["suffix"],
         "suffix_path": series["suffix_path"],
         "good_count": series["good_count"],
@@ -238,6 +458,9 @@ def serialize_series(series):
         "top5_sum": series["top5_sum"],
         "words": [serialize_word(member) for member in members],
     }
+    if "role" in series:
+        payload["role"] = series["role"]
+    return payload
 
 
 def _recognize_path(path, model):
