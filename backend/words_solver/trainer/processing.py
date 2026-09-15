@@ -10,6 +10,7 @@ from .constants import (
     IN_BAND_TARGET_RATIO,
     MEDIUM_MAX_SCORE,
     MEDIUM_MIN_SCORE,
+    MULTIPLIER_TYPES,
     PHYSICAL_CELL_COUNT,
     RICH_MIN_SCORE,
     TARGET_WORDS_MAX,
@@ -92,6 +93,40 @@ def score_word_for_path(
         word,
         multipliers,
         [multiplier for multiplier in multipliers if multiplier in ("c2", "c3")],
+    )
+
+
+def validate_multiplier_assignment(multipliers: Iterable[str | None]) -> tuple[str | None, ...]:
+    """Validate the one-global-set-of-four economic multiplier assignment."""
+    try:
+        assignment = tuple(multipliers)
+    except TypeError as exc:
+        raise ValueError("multiplier assignment must be iterable") from exc
+    if len(assignment) != PHYSICAL_CELL_COUNT:
+        raise ValueError("multiplier assignment must contain 25 cells")
+    if any(
+        multiplier is not None and multiplier not in MULTIPLIER_TYPES for multiplier in assignment
+    ):
+        raise ValueError("multiplier assignment contains an unknown multiplier")
+    present = tuple(multiplier for multiplier in assignment if multiplier is not None)
+    if len(present) != len(MULTIPLIER_TYPES) or set(present) != set(MULTIPLIER_TYPES):
+        raise ValueError("assignment must contain exactly one x2, x3, c2, and c3")
+    return assignment
+
+
+def score_word_with_multipliers(
+    word: str, full_path: Iterable[int], multipliers: Iterable[str | None]
+) -> int:
+    """Score a concrete path through the production word-score implementation."""
+    path = validate_physical_path(full_path)
+    assignment = validate_multiplier_assignment(multipliers)
+    if not isinstance(word, str) or len(word) != len(path):
+        raise ValueError("word must be a string with one letter per path cell")
+    path_multipliers = [assignment[cell] for cell in path]
+    return calculate_word_score(
+        word,
+        path_multipliers,
+        [multiplier for multiplier in path_multipliers if multiplier in ("c2", "c3")],
     )
 
 

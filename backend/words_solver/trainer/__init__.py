@@ -1,5 +1,14 @@
 """Flask-independent Grail Trainer domain foundation."""
 
+from .economics import (
+    EconomicQuality,
+    ScoredTargetGroup,
+    TrainerEconomicPlan,
+    assign_roles_for_suffix,
+    generate_economic_plan,
+    optimize_multiplier_placement,
+    score_target_group,
+)
 from .generation import (
     LetterRequirements,
     TargetGroupPlan,
@@ -20,17 +29,24 @@ from .processing import classify_suffix_group, score_word_for_path, validate_phy
 
 __all__ = (
     "LetterRequirements",
+    "EconomicQuality",
+    "ScoredTargetGroup",
     "TargetGroupPlan",
     "TargetWordPlan",
     "TrainerBoard",
     "TrainerBoardValidationError",
     "TrainerGenerationError",
+    "TrainerEconomicPlan",
     "TrainerGeometryPlan",
     "TrainerCell",
     "build_candidate_word_index",
     "classify_suffix_group",
     "generate_geometry_plan",
+    "generate_economic_plan",
     "normalize_selected_suffixes",
+    "optimize_multiplier_placement",
+    "assign_roles_for_suffix",
+    "score_target_group",
     "score_word_for_path",
     "seeded_rng",
     "validate_physical_path",
