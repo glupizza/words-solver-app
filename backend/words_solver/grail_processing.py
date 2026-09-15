@@ -8,6 +8,7 @@ from statistics import median
 
 import cv2
 
+from .grail_constants import PRIORITY_SERIES_SUFFIXES, TABLE_AWARE_SUFFIXES
 from .grail_search import GRID_SIZE, find_grail_words
 from .image_processing import TRANSLIT_TO_RUS, crop_board_image, recognize_board_cells
 
@@ -22,16 +23,6 @@ MAIN_EVALUATION_WINDOW = 25
 VALUE_EVALUATION_WINDOW = 15
 VALUE_LENGTH_PENALTY = 20
 NESTED_TOP5_PRESERVE_RATIO = 0.95
-PRIORITY_SERIES_SUFFIXES = (
-    "\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435",
-    "\u0438\u0440\u043e\u0432\u0430\u0442\u044c\u0441\u044f",
-    "\u0438\u0440\u043e\u0432\u0430\u0442\u044c",
-    "\u0438\u0440\u043e\u0432\u0430\u043d\u043d\u044b\u0439",
-    "\u0438\u0440\u043e\u0432\u043a\u0430",
-    "\u0441\u0442\u0440\u043e\u0435\u043d\u0438\u0435",
-    "\u0432\u0430\u0440\u0438\u0432\u0430\u043d\u0438\u0435",
-)
-TABLE_AWARE_SUFFIXES = PRIORITY_SERIES_SUFFIXES[:5]
 
 
 def _load_known_bases():
