@@ -45,7 +45,7 @@ def _validate_grid_shape(grid, name):
             raise ValueError(f"{name} must be a {GRID_SIZE}x{GRID_SIZE} grid")
 
 
-def _prepare_cell_letters(cell_letters):
+def _prepare_cell_letters(cell_letters, allow_empty=False):
     _validate_grid_shape(cell_letters, "cell_letters")
     prepared = []
     for row in cell_letters:
@@ -56,7 +56,7 @@ def _prepare_cell_letters(cell_letters):
                 letters = tuple(sorted(set(cell)))
             except TypeError as exc:
                 raise ValueError("each Grail cell must be an iterable of letters") from exc
-            if not 1 <= len(letters) <= 5:
+            if not (0 if allow_empty else 1) <= len(letters) <= 5:
                 raise ValueError("each Grail cell must contain between 1 and 5 unique letters")
             if any(letter not in RUSSIAN_LETTERS for letter in letters):
                 raise ValueError("each Grail cell must contain single Russian letters")
@@ -69,7 +69,9 @@ def _prepare_multipliers(multipliers):
     return tuple(multiplier for row in multipliers for multiplier in row)
 
 
-def find_grail_words(cell_letters, multipliers, trie):
+def find_grail_words(
+    cell_letters, multipliers, trie, *, suffix_paths=None, allow_empty_cells=False
+):
     """Find dictionary words on a 5x5 Grail board.
 
     ``cell_letters`` contains an iterable of one to five letter variants per
@@ -77,7 +79,8 @@ def find_grail_words(cell_letters, multipliers, trie):
     score and the highest-scoring geometric path.  Equal scores retain the
     first deterministic traversal path.
     """
-    prepared_letters = _prepare_cell_letters(cell_letters)
+    prepared_letters = _prepare_cell_letters(cell_letters, allow_empty=allow_empty_cells)
+    target_suffix_paths = None if suffix_paths is None else {tuple(path) for path in suffix_paths}
     prepared_letter_bits = tuple(
         tuple((letter, RUSSIAN_LETTER_BITS[letter]) for letter in letters)
         for letters in prepared_letters
@@ -108,16 +111,27 @@ def find_grail_words(cell_letters, multipliers, trie):
         if len(path_letters) > 1 and node.is_end_of_word:
             word = "".join(path_letters)
             score = raw_score * WORD_MULTIPLIER_FACTORS[score_state & 3]
-            previous = found_words.get(word)
-            if previous is None or score > previous["score"]:
-                found_words[word] = {
-                    "name": word,
-                    "score": score,
-                    "path": tuple(
-                        (cell // GRID_SIZE, cell % GRID_SIZE, letter)
-                        for cell, letter in zip(path_positions, path_letters, strict=True)
-                    ),
-                }
+            result = {
+                "name": word,
+                "score": score,
+                "path": tuple(
+                    (cell // GRID_SIZE, cell % GRID_SIZE, letter)
+                    for cell, letter in zip(path_positions, path_letters, strict=True)
+                ),
+            }
+            if target_suffix_paths is None:
+                previous = found_words.get(word)
+                if previous is None or score > previous["score"]:
+                    found_words[word] = result
+            else:
+                physical_path = tuple(path_positions)
+                for suffix_path in target_suffix_paths:
+                    if physical_path[-len(suffix_path) :] != suffix_path:
+                        continue
+                    key = (word, suffix_path)
+                    previous = found_words.get(key)
+                    if previous is None or score > previous["score"]:
+                        found_words[key] = result
 
         children = node.children
         if not children:
