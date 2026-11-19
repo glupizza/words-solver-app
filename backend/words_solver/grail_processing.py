@@ -1,46 +1,21 @@
 """Reusable production processing for five-image Grail boards."""
 
-import json
 import time
 from collections import Counter
-from pathlib import Path
-from statistics import median
 
 import cv2
 
-from .grail_constants import PRIORITY_SERIES_SUFFIXES, TABLE_AWARE_SUFFIXES
+from .grail_constants import (
+    GRAIL_SERIES_SUFFIXES,
+    MIN_GRAIL_SERIES_WORD_SCORE,
+    PRIORITY_SERIES_SUFFIXES,
+)
 from .grail_search import GRID_SIZE, find_grail_words
 from .image_processing import TRANSLIT_TO_RUS, crop_board_image, recognize_board_cells
 
 IMAGE_COUNT = 5
 MAX_WORDS = 500
-MAX_SERIES = 50
-MIN_SERIES_SUFFIX_LENGTH = 6
-MIN_WORD_SCORE = 400
 MIN_GOOD_WORDS = 8
-MAIN_EVALUATION_WINDOW = 25
-VALUE_EVALUATION_WINDOW = 15
-VALUE_LENGTH_PENALTY = 20
-
-
-def _load_known_bases():
-    path = Path(__file__).resolve().parents[1] / "assets" / "grail_known_bases.json"
-    with path.open(encoding="utf-8") as source:
-        data = json.load(source)
-    bases = {
-        link.strip().lower(): {base.strip().lower() for base in values}
-        for link, values in data["link_bases"].items()
-    }
-    if (
-        data.get("suffix") != "\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435"
-        or len(bases) != 18
-        or sum(len(values) for values in bases.values()) != 428
-    ):
-        raise ValueError("invalid grail known-bases asset")
-    return bases
-
-
-KNOWN_BASES = _load_known_bases()
 
 
 class GrailMultiplierConflict(ValueError):
@@ -139,14 +114,16 @@ def _series_metrics(suffix, suffix_path, members):
     }
 
 
-def build_series(results, min_suffix_length=MIN_SERIES_SUFFIX_LENGTH):
-    min_suffix_length = max(min_suffix_length, MIN_SERIES_SUFFIX_LENGTH)
+def build_series(results):
     candidates = {}
     for result in results.values():
+        if result["score"] <= MIN_GRAIL_SERIES_WORD_SCORE:
+            continue
         word = result["name"]
         path = tuple(row * GRID_SIZE + col for row, col, _letter in result["path"])
-        for length in range(min_suffix_length, len(word) + 1):
-            candidates.setdefault((word[-length:], path[-length:]), []).append(result)
+        for suffix in GRAIL_SERIES_SUFFIXES:
+            if word.endswith(suffix) and len(path) >= len(suffix):
+                candidates.setdefault((suffix, path[-len(suffix) :]), []).append(result)
     return [
         _series_metrics(suffix, path, members)
         for (suffix, path), members in candidates.items()
@@ -155,333 +132,78 @@ def build_series(results, min_suffix_length=MIN_SERIES_SUFFIX_LENGTH):
 
 
 def _ranking_key(series):
-    high = sum(member["score"] >= MIN_WORD_SCORE for member in series["good_members"])
     return (
         -series["good_count"],
-        -high,
-        -high / series["good_count"],
+        -sum(member["score"] for member in series["good_members"][:8]),
         -series["average_score"],
-        -series["top3_sum"],
-        -series["top5_sum"],
-        -series["good_count"],
-        -series["suffix_length"],
-        series["suffix"],
-        series["suffix_path"],
-    )
-
-
-def _suppresses(broad, nested):
-    broad_names = {member["name"] for member in broad["good_members"]}
-    nested_names = {member["name"] for member in nested["good_members"]}
-    contained = (
-        nested["suffix_length"] > broad["suffix_length"]
-        and nested["suffix"].endswith(broad["suffix"])
-        and nested["suffix_path"][-broad["suffix_length"] :] == broad["suffix_path"]
-        and len(broad_names & nested_names) >= 0.8 * len(nested_names)
-    )
-    return contained
-
-
-def _merge_series_by_suffix(series):
-    merged = {}
-    for item in series:
-        current = merged.get(item["suffix"])
-        if current is None:
-            current = {
-                "suffix_path": item["suffix_path"],
-                "members": {},
-            }
-            merged[item["suffix"]] = current
-        for member in item["good_members"]:
-            existing = current["members"].get(member["name"])
-            if existing is None or member["score"] > existing["score"]:
-                current["members"][member["name"]] = member
-    return [
-        _series_metrics(suffix, item["suffix_path"], item["members"].values())
-        for suffix, item in merged.items()
-    ]
-
-
-def _word_features(member, suffix):
-    word = member["name"]
-    prefix = word[: -len(suffix)] if suffix else word
-    path = tuple(row * GRID_SIZE + col for row, col, _letter in member["path"])
-    if prefix and len(path) >= len(prefix):
-        link_letter = prefix[-1]
-        base = prefix[:-1]
-        link_position = path[len(prefix) - 1]
-        bundle = (link_letter, link_position)
-    else:
-        link_letter = ""
-        base = ""
-        link_position = -1
-        bundle = ("", -1)
-    normalized_link = link_letter.strip().lower()
-    normalized_base = base.strip().lower()
-    known = normalized_link in KNOWN_BASES and normalized_base in KNOWN_BASES[normalized_link]
-    return {
-        "member": member,
-        "name": word,
-        "score": member["score"],
-        "prefix_length": len(prefix),
-        "base_length": len(base),
-        "known": known,
-        "short_known": known and 1 <= len(base) <= 5,
-        "short_any": 1 <= len(base) <= 5,
-        "bundle": bundle,
-    }
-
-
-def _concentration(features):
-    counts = Counter(feature["bundle"] for feature in features)
-    values = sorted(counts.values(), reverse=True)
-    return len(counts), sum(values[:3]) / len(features) if features else 0
-
-
-def _main_window(features, table_aware):
-    if table_aware:
-
-        def key(feature):
-            category = (
-                0
-                if feature["short_known"]
-                else 1
-                if feature["known"]
-                else 2
-                if feature["short_any"]
-                else 3
-            )
-            return category, feature["base_length"], feature["score"], feature["name"]
-    else:
-
-        def key(feature):
-            return feature["prefix_length"], feature["score"], feature["name"]
-
-    return sorted(features, key=key)[:MAIN_EVALUATION_WINDOW]
-
-
-def _value_window(features):
-    def adjusted(feature):
-        return feature["score"] - VALUE_LENGTH_PENALTY * max(feature["prefix_length"] - 5, 0)
-
-    return sorted(
-        features,
-        key=lambda feature: (
-            -adjusted(feature),
-            feature["prefix_length"],
-            -feature["score"],
-            feature["name"],
-        ),
-    )[:VALUE_EVALUATION_WINDOW]
-
-
-def _main_key(series):
-    features = [_word_features(member, series["suffix"]) for member in series["good_members"]]
-    table_aware = series["suffix"] in TABLE_AWARE_SUFFIXES
-    window = _main_window(features, table_aware)
-    distinct, coverage = _concentration(window)
-    scores = [feature["score"] for feature in window]
-    if table_aware:
-        return (
-            -sum(feature["short_known"] for feature in window),
-            -sum(feature["known"] for feature in window),
-            -coverage,
-            distinct,
-            -median(scores),
-            -sum(scores) / len(scores),
-            tuple(series["suffix_path"]),
-        )
-    lengths = [feature["prefix_length"] for feature in window]
-    return (
-        -sum(feature["short_any"] for feature in window),
-        -coverage,
-        distinct,
-        median(lengths),
-        -median(scores),
-        -sum(scores) / len(scores),
         tuple(series["suffix_path"]),
     )
 
 
-def _value_key(series):
-    features = [_word_features(member, series["suffix"]) for member in series["good_members"]]
-    window = _value_window(features)
-    adjusted = [
-        feature["score"] - VALUE_LENGTH_PENALTY * max(feature["prefix_length"] - 5, 0)
-        for feature in window
-    ]
-    scores = [feature["score"] for feature in window]
-    distinct, coverage = _concentration(window)
-    value_index = (
-        sum(adjusted)
-        / len(adjusted)
-        * min(len(window), VALUE_EVALUATION_WINDOW)
-        / VALUE_EVALUATION_WINDOW
-    )
-    return (
-        -value_index,
-        -median(adjusted),
-        -sum(scores) / len(scores),
-        -coverage,
-        distinct,
-        tuple(series["suffix_path"]),
-    )
-
-
-def _display_members(series, role):
-    table_aware = series["suffix"] in TABLE_AWARE_SUFFIXES
-    features = [_word_features(member, series["suffix"]) for member in series["good_members"]]
-    window = _main_window(features, table_aware) if role == "main" else _value_window(features)
-    window_counts = Counter(feature["bundle"] for feature in window)
-    window_ids = {id(feature) for feature in window}
-    adjusted = {
-        id(feature): feature["score"] - VALUE_LENGTH_PENALTY * max(feature["prefix_length"] - 5, 0)
-        for feature in features
-    }
-    groups = {}
-    for feature in features:
-        groups.setdefault(feature["bundle"], []).append(feature)
-
-    def word_key(feature):
-        if table_aware:
-            return not feature["known"], feature["base_length"], feature["score"], feature["name"]
-        return feature["prefix_length"], feature["score"], feature["name"]
-
-    def bundle_key(item):
-        bundle, members = item
-        if role == "value":
-            in_window = [member for member in members if id(member) in window_ids]
-            return (
-                -window_counts[bundle],
-                -sum(adjusted[id(member)] for member in in_window),
-                -(
-                    sum(adjusted[id(member)] for member in in_window) / len(in_window)
-                    if in_window
-                    else 0
-                ),
-                -len(members),
-                (bundle[0] + series["suffix"]),
-                bundle[1],
-            )
-        scores = [member["score"] for member in members]
-        if table_aware:
-            return (
-                -window_counts[bundle],
-                -sum(member["short_known"] for member in members),
-                -sum(member["known"] for member in members),
-                -len(members),
-                -median(scores),
-                bundle[0] + series["suffix"],
-                bundle[1],
-            )
-        return (
-            -window_counts[bundle],
-            -len(members),
-            median(member["prefix_length"] for member in members),
-            -median(scores),
-            bundle[0] + series["suffix"],
-            bundle[1],
+def _display_members(series):
+    def key(member):
+        prefix_length = len(member["name"]) - series["suffix_length"]
+        prefix = member["path"][:prefix_length]
+        reverse_route = tuple(
+            (row * GRID_SIZE + col, letter) for row, col, letter in reversed(prefix)
         )
+        return reverse_route, -member["score"], member["name"]
 
-    return [
-        member["member"]
-        for _bundle, members in sorted(groups.items(), key=bundle_key)
-        for member in sorted(members, key=word_key)
-    ]
+    return sorted(series["good_members"], key=key)
 
 
-def _with_role(series, role):
-    unique = {}
-    for member in series["good_members"]:
-        previous = unique.get(member["name"])
-        if previous is None or member["score"] > previous["score"]:
-            unique[member["name"]] = member
-    selected = _series_metrics(series["suffix"], series["suffix_path"], unique.values())
-    selected["role"] = role
-    selected["display_members"] = _display_members(selected, role)
-    return selected
-
-
-def select_series(results, min_suffix_length=MIN_SERIES_SUFFIX_LENGTH):
-    candidates = build_series(results, min_suffix_length)
-    ordered = sorted(
-        candidates,
-        key=lambda item: (
-            -item["good_count"],
-            item["suffix"] not in PRIORITY_SERIES_SUFFIXES,
-            item["suffix_length"],
-            _ranking_key(item),
-        ),
-    )
-    protected = []
-    for candidate in ordered:
-        if any(
-            _suppresses(other, candidate)
-            or (
-                other["suffix"] in PRIORITY_SERIES_SUFFIXES
-                and other["good_count"] == candidate["good_count"]
-                and _suppresses(candidate, other)
-            )
-            for other in protected
-        ):
-            continue
-        protected.append(candidate)
-
-    priority = []
-    for suffix in PRIORITY_SERIES_SUFFIXES:
-        paths = [candidate for candidate in protected if candidate["suffix"] == suffix]
-        if paths:
-            main = min(paths, key=lambda item: (_ranking_key(item)[:3], _main_key(item)))
-            value = min(paths, key=lambda item: (_ranking_key(item)[:3], _value_key(item)))
-            priority.append(_with_role(main, "main"))
-            if main["suffix_path"] != value["suffix_path"] or {
-                m["name"] for m in main["good_members"]
-            } != {m["name"] for m in value["good_members"]}:
-                priority.append(_with_role(value, "value"))
-    normal = []
+def select_series(results):
+    candidates = build_series(results)
+    chosen = {}
+    assigned = set()
+    # Specific endings claim words only after an eligible route survives deduplication.
     for suffix in sorted(
-        {candidate["suffix"] for candidate in protected} - set(PRIORITY_SERIES_SUFFIXES)
+        GRAIL_SERIES_SUFFIXES, key=lambda item: (-len(item), GRAIL_SERIES_SUFFIXES.index(item))
     ):
-        paths = [candidate for candidate in protected if candidate["suffix"] == suffix]
-        normal.append(
-            _with_role(
-                min(paths, key=lambda item: (_ranking_key(item)[:3], _value_key(item))), "value"
-            )
-        )
-    normal.sort(key=_ranking_key)
-    selected = []
-    for item in priority + normal:
-        if len(selected) >= MAX_SERIES and (
-            not selected or item["suffix"] != selected[-1]["suffix"]
-        ):
-            break
-        selected.append(item)
-    return selected
+        paths = [item for item in candidates if item["suffix"] == suffix]
+        routes = []
+        for _ in range(2):
+            remaining = []
+            for item in paths:
+                members = [
+                    member for member in item["good_members"] if member["name"] not in assigned
+                ]
+                if len(members) >= MIN_GOOD_WORDS:
+                    remaining.append(_series_metrics(suffix, item["suffix_path"], members))
+            if not remaining:
+                break
+            best = min(remaining, key=_ranking_key)
+            best["display_members"] = _display_members(best)
+            routes.append(best)
+            assigned.update(member["name"] for member in best["good_members"])
+            paths = [item for item in paths if item["suffix_path"] != best["suffix_path"]]
+        if routes:
+            chosen[suffix] = {"suffix": suffix, "routes": routes}
+    return [chosen[suffix] for suffix in GRAIL_SERIES_SUFFIXES if suffix in chosen]
 
 
 def serialize_series(series):
-    members = series.get("display_members", series["good_members"])
-    metrics = _series_metrics(series["suffix"], series["suffix_path"], members)
-    best = {member["name"]: member for member in metrics["good_members"]}
-    names = set()
-    ordered_members = []
-    for member in members:
-        if member["name"] not in names:
-            names.add(member["name"])
-            ordered_members.append(best[member["name"]])
-    payload = {
+    routes = []
+    for route in series["routes"]:
+        routes.append(
+            {
+                "suffix_path": route["suffix_path"],
+                "good_count": route["good_count"],
+                "best_score": route["best_score"],
+                "top3_sum": route["top3_sum"],
+                "top5_sum": route["top5_sum"],
+                "average_score": route["average_score"],
+                "words": [serialize_word(member) for member in route["display_members"]],
+            }
+        )
+    words = [word for route in routes for word in route["words"]]
+    return {
         "suffix": series["suffix"],
-        "suffix_path": series["suffix_path"],
-        "good_count": metrics["good_count"],
-        "best_score": metrics["best_score"],
-        "top3_sum": metrics["top3_sum"],
-        "top5_sum": metrics["top5_sum"],
-        "average_score": metrics["average_score"],
-        "words": [serialize_word(member) for member in ordered_members],
+        "routes": routes,
+        "good_count": len(words),
+        "average_score": sum(word["score"] for word in words) / len(words),
+        "best_score": max(word["score"] for word in words),
     }
-    if "role" in series:
-        payload["role"] = series["role"]
-    return payload
 
 
 def _recognize_path(path, model):
@@ -531,10 +253,11 @@ def prepare_grail_board(paths, model):
 def search_grail_board(cell_letters, multipliers, trie):
     """Run the existing Grail DFS and series selection on a prepared board."""
     search_started = time.perf_counter()
-    results = find_grail_words(cell_letters, multipliers, trie)
+    series_results = {}
+    results = find_grail_words(cell_letters, multipliers, trie, series_results=series_results)
     search_seconds = time.perf_counter() - search_started
     series_started = time.perf_counter()
-    series = select_series(results)
+    series = select_series(series_results)
     series_seconds = time.perf_counter() - series_started
     return (
         results,
@@ -544,6 +267,13 @@ def search_grail_board(cell_letters, multipliers, trie):
             "series_processing_seconds": series_seconds,
         },
     )
+
+
+def search_grail_best_words(cell_letters, multipliers, trie):
+    """Find the best-scoring path per word without collecting series variants."""
+    started = time.perf_counter()
+    results = find_grail_words(cell_letters, multipliers, trie)
+    return results, time.perf_counter() - started
 
 
 def grail_result_from_search(prepared, results, series, search_timings):

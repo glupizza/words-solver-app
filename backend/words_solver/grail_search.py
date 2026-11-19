@@ -1,5 +1,6 @@
 """Trie search for a fixed-size Grail board with per-cell letter choices."""
 
+from .grail_constants import GRAIL_SERIES_SUFFIXES, MIN_GRAIL_SERIES_WORD_SCORE
 from .trie import RUSSIAN_LETTER_BITS
 
 GRID_SIZE = 5
@@ -70,7 +71,13 @@ def _prepare_multipliers(multipliers):
 
 
 def find_grail_words(
-    cell_letters, multipliers, trie, *, suffix_paths=None, allow_empty_cells=False
+    cell_letters,
+    multipliers,
+    trie,
+    *,
+    suffix_paths=None,
+    allow_empty_cells=False,
+    series_results=None,
 ):
     """Find dictionary words on a 5x5 Grail board.
 
@@ -102,6 +109,7 @@ def find_grail_words(
         for multiplier in flat_multipliers
     )
     found_words = {}
+    matching_suffixes = {}
     path_letters = []
     path_positions = []
 
@@ -132,6 +140,17 @@ def find_grail_words(
                     previous = found_words.get(key)
                     if previous is None or score > previous["score"]:
                         found_words[key] = result
+
+            if series_results is not None and score > MIN_GRAIL_SERIES_WORD_SCORE:
+                if word not in matching_suffixes:
+                    matching_suffixes[word] = tuple(
+                        suffix for suffix in GRAIL_SERIES_SUFFIXES if word.endswith(suffix)
+                    )
+                for suffix in matching_suffixes[word]:
+                    key = (word, suffix, tuple(path_positions[-len(suffix) :]))
+                    previous = series_results.get(key)
+                    if previous is None or score > previous["score"]:
+                        series_results[key] = result
 
         children = node.children
         if not children:

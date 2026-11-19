@@ -134,7 +134,7 @@
 
         <template v-if="!grailLoading && grailHasSearched && (!grailErrorMessage || grailSeries.length)">
             <div v-if="grailSearchingRemaining" class="grail-progress">
-              Приоритетные серии готовы · ищем остальные…
+              Ищем следующие серии…
             </div>
             <div class="result-tabs" role="tablist" aria-label="Результаты Грааля">
               <button
@@ -152,7 +152,7 @@
                 role="tab"
                 :aria-selected="grailTab === 'best'"
                 :class="{ active: grailTab === 'best' }"
-                :disabled="grailSearchingRemaining"
+                :disabled="!grailComplete"
                 @click="grailTab = 'best'"
               >
                 Лучшие
@@ -172,28 +172,34 @@
           </div>
 
           <div v-else>
-            <div v-if="grailSeries.length === 0" class="empty">Серии не найдены</div>
-            <div v-else class="series-list">
-              <article v-for="(series, seriesIndex) in grailSeries" :key="`${series.suffix}-${series.role}-${seriesIndex}`" class="series-card">
+            <div v-if="grailSeries.length === 0 && !grailSearchingRemaining" class="empty">Серии не найдены</div>
+            <div v-else-if="grailSeries.length" class="series-list">
+              <article v-for="series in grailSeries" :key="series.suffix" class="series-card">
                 <button
                   type="button"
                   class="series-header"
-                  :aria-expanded="expandedSeries === seriesIndex"
-                  @click="toggleSeries(seriesIndex, $event)"
+                  :aria-expanded="expandedSeries === series.suffix"
+                  @click="toggleSeries(series.suffix, $event)"
                 >
-                  <strong>{{ series.suffix }}<small v-if="series.role"> · {{ series.role === 'main' ? 'Основная' : 'Выгодная' }}</small></strong>
+                  <strong>{{ series.suffix }}</strong>
                   <span>{{ series.good_count }} слов</span>
                   <span>среднее {{ Math.round(series.average_score) }} оч.</span>
                 </button>
-                <div v-if="expandedSeries === seriesIndex" class="series-words">
-                  <section v-for="(bundle, bundleIndex) in seriesBundles(series)" :key="`${bundle.label}-${bundleIndex}`" class="series-bundle">
-                    <h3>{{ bundle.label }} · {{ bundle.words.length }}</h3>
-                  <article v-for="(word, wordIndex) in bundle.words" :key="`${word.name}-${wordIndex}`" class="grail-word-card compact-word-card">
-                    <button type="button" class="grail-word-button" :aria-expanded="expandedSeriesWord === `${seriesIndex}-${bundleIndex}-${wordIndex}`" @click="toggleSeriesWord(seriesIndex, `${bundleIndex}-${wordIndex}`, word)">
-                      <strong>{{ word.name }}</strong><span class="score">{{ word.score }}</span><span v-if="viewedWordKeys[wordKey(word)]" class="viewed-mark" aria-label="Просмотрено">✓</span>
+                <div v-if="expandedSeries === series.suffix" class="series-words">
+                  <section v-for="(route, routeIndex) in series.routes" :key="routeKey(series.suffix, route)" class="series-route">
+                    <h3>Маршрут {{ routeIndex + 1 }} — {{ route.good_count }} слов · среднее {{ Math.round(route.average_score) }} оч.</h3>
+                    <section v-for="(bundle, bundleIndex) in seriesBundles(series.suffix, route, Boolean(showAllSeriesWords[routeKey(series.suffix, route)]))" :key="bundleIndex" class="series-bundle">
+                      <h3>{{ bundle.label }} · {{ bundle.words.length }}</h3>
+                      <article v-for="word in bundle.words" :key="word.name" class="grail-word-card compact-word-card">
+                        <button type="button" class="grail-word-button" :aria-expanded="expandedSeriesWord === `${routeKey(series.suffix, route)}-${word.name}`" @click="toggleSeriesWord(routeKey(series.suffix, route), word)">
+                          <strong>{{ word.name }}</strong><span class="score">{{ word.score }}</span><span v-if="viewedWordKeys[wordKey(word)]" class="viewed-mark" aria-label="Просмотрено">✓</span>
+                        </button>
+                        <GrailPathMap v-if="expandedSeriesWord === `${routeKey(series.suffix, route)}-${word.name}`" :word="word.name" :path="word.path" :suffix="series.suffix" />
+                      </article>
+                    </section>
+                    <button v-if="route.words.length > 20" type="button" class="series-more" @click="toggleRouteWords(routeKey(series.suffix, route))">
+                      {{ showAllSeriesWords[routeKey(series.suffix, route)] ? 'Свернуть' : `Показать ещё (${route.words.length - 20})` }}
                     </button>
-                    <GrailPathMap v-if="expandedSeriesWord === `${seriesIndex}-${bundleIndex}-${wordIndex}`" :word="word.name" :path="word.path" :suffix="series.suffix" />
-                  </article>
                   </section>
                 </div>
               </article>
@@ -207,6 +213,7 @@
 
 <script>
 import GrailPathMap from './GrailPathMap.vue';
+import { mergeSeries, routeKey, seriesBundles } from '../grailSeries.js';
 
 export default {
   name: 'Home',
@@ -225,12 +232,14 @@ export default {
       grailSeries: [],
       grailLoading: false,
       grailSearchingRemaining: false,
+      grailComplete: false,
       grailErrorMessage: '',
       grailHasSearched: false,
       grailTab: 'series',
       expandedBestWord: null,
       expandedSeries: null,
       expandedSeriesWord: null,
+      showAllSeriesWords: {},
       viewedWordKeys: {},
       grailAbortController: null,
       grailRequestToken: 0,
@@ -263,9 +272,11 @@ export default {
       this.grailWords = [];
       this.grailSeries = [];
       this.grailSearchingRemaining = false;
+      this.grailComplete = false;
       this.expandedBestWord = null;
       this.expandedSeries = null;
       this.expandedSeriesWord = null;
+      this.showAllSeriesWords = {};
       this.viewedWordKeys = {};
 
       event.target.value = '';
@@ -280,9 +291,11 @@ export default {
       this.grailWords = [];
       this.grailSeries = [];
       this.grailSearchingRemaining = false;
+      this.grailComplete = false;
       this.expandedBestWord = null;
       this.expandedSeries = null;
       this.expandedSeriesWord = null;
+      this.showAllSeriesWords = {};
       this.viewedWordKeys = {};
     },
     clearGrailPreviews() {
@@ -303,33 +316,24 @@ export default {
       this.markViewedWord(word);
       this.expandedBestWord = this.expandedBestWord === index ? null : index;
     },
-    toggleSeries(index, event) {
+    toggleSeries(suffix, event) {
       const header = event.currentTarget;
       const beforeTop = header.getBoundingClientRect().top;
-      this.expandedSeries = this.expandedSeries === index ? null : index;
+      this.expandedSeries = this.expandedSeries === suffix ? null : suffix;
       this.expandedSeriesWord = null;
       this.$nextTick(() => {
         window.scrollBy(0, header.getBoundingClientRect().top - beforeTop);
       });
     },
-    seriesBundles(series) {
-      const suffix = Array.from(series.suffix || '');
-      const bundles = new Map();
-      (series.words || []).forEach((word) => {
-        const chars = Array.from(word.name || '');
-        const prefixLength = chars.length - suffix.length;
-        const link = prefixLength > 0 ? chars[prefixLength - 1] : '';
-        const position = prefixLength > 0 && Array.isArray(word.path) ? word.path[prefixLength - 1] : -1;
-        const key = `${link}|${position}`;
-        if (!bundles.has(key)) bundles.set(key, { label: link ? `${link}${series.suffix}` : series.suffix, words: [] });
-        bundles.get(key).words.push(word);
-      });
-      return Array.from(bundles.values());
+    seriesBundles,
+    routeKey,
+    toggleRouteWords(key) {
+      this.showAllSeriesWords = { ...this.showAllSeriesWords, [key]: !this.showAllSeriesWords[key] };
     },
-    toggleSeriesWord(seriesIndex, wordIndex, word) {
+    toggleSeriesWord(key, word) {
       this.markViewedWord(word);
-      const key = `${seriesIndex}-${wordIndex}`;
-      this.expandedSeriesWord = this.expandedSeriesWord === key ? null : key;
+      const wordId = `${key}-${word.name}`;
+      this.expandedSeriesWord = this.expandedSeriesWord === wordId ? null : wordId;
     },
     async uploadImage() {
       if (!this.selectedImage) return;
@@ -372,6 +376,7 @@ export default {
       this.grailAbortController = controller;
       this.grailLoading = true;
       this.grailSearchingRemaining = false;
+      this.grailComplete = false;
       this.grailErrorMessage = '';
       this.grailHasSearched = false;
       this.grailWords = [];
@@ -379,6 +384,7 @@ export default {
       this.expandedBestWord = null;
       this.expandedSeries = null;
       this.expandedSeriesWord = null;
+      this.showAllSeriesWords = {};
       this.viewedWordKeys = {};
       const formData = new FormData();
       this.grailFiles.forEach((item) => formData.append('images', item.file));
@@ -453,23 +459,19 @@ export default {
     },
     applyGrailStreamEvent(event, requestToken) {
       if (requestToken !== this.grailRequestToken) return;
-      if (event.type === 'priority') {
-        this.grailSeries = Array.isArray(event.series) ? event.series : [];
+      if (event.type === 'priority' || event.type === 'series_batch') {
+        this.grailSeries = mergeSeries(this.grailSeries, Array.isArray(event.series) ? event.series : []);
         this.grailHasSearched = true;
-        this.grailTab = 'series';
         this.grailLoading = false;
         this.grailSearchingRemaining = true;
         return;
       }
       if (event.type === 'complete') {
         this.grailWords = Array.isArray(event.words) ? event.words : [];
-        this.grailSeries = Array.isArray(event.series) ? event.series : [];
+        this.grailSeries = mergeSeries([], Array.isArray(event.series) ? event.series : []);
         this.grailHasSearched = true;
         this.grailSearchingRemaining = false;
-        if (this.expandedSeries !== null && this.expandedSeries >= this.grailSeries.length) {
-          this.expandedSeries = null;
-          this.expandedSeriesWord = null;
-        }
+        this.grailComplete = true;
         return;
       }
       if (event.type === 'error') {
@@ -927,16 +929,34 @@ button:focus-visible,
   font-size: 1rem;
 }
 
-.series-header small {
-  color: var(--color-warm);
-  font-size: 0.78rem;
-  font-weight: 800;
+.series-more {
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  color: var(--text);
+  background: var(--surface-light);
+  cursor: pointer;
 }
 
 .series-words {
   display: grid;
   gap: 6px;
   padding: 0 10px 10px;
+}
+
+.series-route + .series-route {
+  border-top: 1px solid var(--border);
+  padding-top: 12px;
+}
+
+.series-route {
+  display: grid;
+  gap: 8px;
+}
+
+.series-route > h3 {
+  margin: 4px 0;
+  font-size: 0.9rem;
 }
 
 .series-bundle + .series-bundle {

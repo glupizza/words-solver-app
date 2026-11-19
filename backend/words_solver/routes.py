@@ -9,12 +9,13 @@ from flask import Blueprint, Response, request, stream_with_context
 from PIL import Image, UnidentifiedImageError
 
 from . import metrics
+from .grail_constants import GRAIL_SUFFIX_BATCHES
 from .grail_processing import (
-    PRIORITY_SERIES_SUFFIXES,
     GrailMultiplierConflict,
     grail_result_from_search,
     prepare_grail_board,
     process_grail_images,
+    search_grail_best_words,
     search_grail_board,
     serialize_series,
 )
@@ -98,9 +99,10 @@ def _ndjson_event(payload):
     )
 
 
-def create_routes(model, trie, priority_trie=None):
+def create_routes(model, trie, priority_trie=None, batch_tries=None):
     bp = Blueprint("routes", __name__)
-    priority_trie = priority_trie or trie
+    if batch_tries is None:
+        batch_tries = [(suffixes, priority_trie or trie) for suffixes in GRAIL_SUFFIX_BATCHES]
 
     allowed_mime_types = {"image/png", "image/jpeg", "image/jpg", "image/webp"}
 
@@ -219,30 +221,6 @@ def create_routes(model, trie, priority_trie=None):
         try:
             paths = _save_grail_files(files)
             prepared = prepare_grail_board(paths, model)
-            fast_results, fast_series, fast_timings = search_grail_board(
-                prepared["cell_letters"], prepared["multipliers"], priority_trie
-            )
-            priority_series = [
-                serialize_series(item)
-                for item in fast_series
-                if item["suffix"] in PRIORITY_SERIES_SUFFIXES
-            ]
-            priority_timings = {
-                **prepared["timings"],
-                "priority_search_seconds": fast_timings["grail_search_seconds"],
-                "priority_series_processing_seconds": fast_timings["series_processing_seconds"],
-            }
-            priority_timings["time_to_priority_seconds"] = sum(priority_timings.values())
-            priority_event = {
-                "type": "priority",
-                "series": priority_series,
-                "meta": {
-                    "phase": "priority",
-                    "priority_result_count": len(fast_results),
-                    "returned_series": len(priority_series),
-                },
-                "timings": priority_timings,
-            }
         except GrailMultiplierConflict as exc:
             logger.info("grail multiplier conflict err=%s", exc)
             return error_response(code="bad_request", message=str(exc), status=400)
@@ -256,20 +234,64 @@ def create_routes(model, trie, priority_trie=None):
 
         @stream_with_context
         def generate():
-            yield _ndjson_event(priority_event)
             try:
-                full_results, full_series, full_timings = search_grail_board(
+                all_series = []
+                batch_search_seconds = 0.0
+                batch_processing_seconds = 0.0
+                time_to_first_nonempty = None
+                for index, (suffixes, batch_trie) in enumerate(batch_tries):
+                    results, series, timings = search_grail_board(
+                        prepared["cell_letters"], prepared["multipliers"], batch_trie
+                    )
+                    batch_search_seconds += timings["grail_search_seconds"]
+                    batch_processing_seconds += timings["series_processing_seconds"]
+                    new_series = [item for item in series if item["suffix"] in suffixes]
+                    all_series.extend(new_series)
+                    elapsed = (
+                        sum(prepared["timings"].values())
+                        + batch_search_seconds
+                        + batch_processing_seconds
+                    )
+                    if new_series and time_to_first_nonempty is None:
+                        time_to_first_nonempty = elapsed
+                    yield _ndjson_event(
+                        {
+                            "type": "priority" if index == 0 else "series_batch",
+                            "series": [serialize_series(item) for item in new_series],
+                            "meta": {
+                                "batch_index": index,
+                                "suffixes": suffixes,
+                                "returned_series": len(new_series),
+                            },
+                            "timings": {
+                                **prepared["timings"],
+                                "batch_search_seconds": timings["grail_search_seconds"],
+                                "time_to_first_nonempty_seconds": time_to_first_nonempty,
+                            },
+                        }
+                    )
+                full_results, best_search_seconds = search_grail_best_words(
                     prepared["cell_letters"], prepared["multipliers"], trie
                 )
                 complete = grail_result_from_search(
-                    prepared, full_results, full_series, full_timings
+                    prepared,
+                    full_results,
+                    all_series,
+                    {
+                        "grail_search_seconds": batch_search_seconds + best_search_seconds,
+                        "series_processing_seconds": batch_processing_seconds,
+                        "batch_search_seconds": batch_search_seconds,
+                        "best_search_seconds": best_search_seconds,
+                        "processed_batches": len(batch_tries),
+                        "time_to_first_nonempty_seconds": time_to_first_nonempty,
+                    },
                 )
                 complete["type"] = "complete"
-                complete["timings"].update(priority_timings)
                 complete["timings"]["request_core_seconds"] = (
-                    priority_timings["time_to_priority_seconds"]
-                    + full_timings["grail_search_seconds"]
-                    + full_timings["series_processing_seconds"]
+                    sum(prepared["timings"].values())
+                    + batch_search_seconds
+                    + batch_processing_seconds
+                    + best_search_seconds
                 )
                 yield _ndjson_event(complete)
             except Exception:

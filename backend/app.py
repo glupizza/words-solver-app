@@ -9,7 +9,7 @@ from werkzeug.exceptions import NotFound, RequestEntityTooLarge
 
 from backend.words_solver import metrics
 from backend.words_solver.dictionary import build_trie, load_words
-from backend.words_solver.grail_processing import priority_dictionary_words
+from backend.words_solver.grail_constants import GRAIL_SUFFIX_BATCHES
 from backend.words_solver.http import error_response, json_response
 from backend.words_solver.logging_config import configure_logging, request_id_var, set_request_id
 from backend.words_solver.model import load_letter_model
@@ -101,9 +101,12 @@ def create_app() -> Flask:
     model = load_letter_model(model_path)
     words = load_words(dictionary_path)
     trie = build_trie(words)
-    priority_trie = build_trie(priority_dictionary_words(words))
+    batch_tries = [
+        (suffixes, build_trie([word for word in words if word.lower().endswith(suffixes)]))
+        for suffixes in GRAIL_SUFFIX_BATCHES
+    ]
 
-    app.register_blueprint(create_routes(model=model, trie=trie, priority_trie=priority_trie))
+    app.register_blueprint(create_routes(model=model, trie=trie, batch_tries=batch_tries))
 
     @app.get("/health")
     def health():

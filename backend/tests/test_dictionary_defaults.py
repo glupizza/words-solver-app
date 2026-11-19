@@ -5,7 +5,6 @@ from flask import Blueprint
 
 from backend.tools import benchmark_grail_search, debug_grail_pipeline
 from backend.words_solver.dictionary import load_words
-from backend.words_solver.grail_processing import PRIORITY_SERIES_SUFFIXES
 
 ASSETS = Path(__file__).resolve().parents[1] / "assets"
 DEFAULT_DICTIONARY = ASSETS / "cleaned_filtered_russian_words_no_past.json"
@@ -43,8 +42,8 @@ def test_app_loads_one_dictionary_for_both_tries(monkeypatch, tmp_path):
     monkeypatch.setattr(model, "load_letter_model", lambda _path: object())
     monkeypatch.setattr(dictionary, "build_trie", lambda words: tuple(words))
 
-    def capture_routes(model, trie, priority_trie):
-        observed.append((trie, priority_trie))
+    def capture_routes(model, trie, batch_tries):
+        observed.append((trie, batch_tries))
         return Blueprint("test_routes", __name__)
 
     monkeypatch.setattr(routes, "create_routes", capture_routes)
@@ -52,11 +51,10 @@ def test_app_loads_one_dictionary_for_both_tries(monkeypatch, tmp_path):
     app_module = importlib.import_module("backend.app")
     app = app_module.create_app()
     assert app.test_client().get("/ready").get_json()["words_loaded"] == 120429
-    all_words, priority_words = observed[-1]
+    all_words, batches = observed[-1]
     assert len(all_words) == 120429
-    assert priority_words == tuple(
-        word for word in all_words if word.lower().endswith(PRIORITY_SERIES_SUFFIXES)
-    )
+    for suffixes, batch_words in batches:
+        assert batch_words == tuple(word for word in all_words if word.lower().endswith(suffixes))
 
     alternative = tmp_path / "alternative.json"
     alternative.write_text(
@@ -65,10 +63,7 @@ def test_app_loads_one_dictionary_for_both_tries(monkeypatch, tmp_path):
     )
     monkeypatch.setenv("DICTIONARY_PATH", str(alternative))
     app_module.create_app()
-    assert observed[-1] == (
-        (
-            "\u0445\u043e\u0434\u0438\u0432\u0448\u0438\u0439",
-            "\u043f\u043b\u0430\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435",
-        ),
-        ("\u043f\u043b\u0430\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435",),
+    assert len(observed[-1][0]) == 2
+    assert observed[-1][1][0][1] == (
+        "\u043f\u043b\u0430\u043d\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435",
     )

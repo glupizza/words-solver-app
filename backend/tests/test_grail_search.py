@@ -18,6 +18,31 @@ def _multipliers():
     return [[None for _ in range(5)] for _ in range(5)]
 
 
+def test_series_collection_retains_real_alternate_suffix_paths_and_scores():
+    word = "\u0438\u0440\u043e\u0432\u0430\u043d\u0438\u0435"
+    letters = [[set() for _ in range(5)] for _ in range(5)]
+    positions = [0, 1, 2, 3, 4, 9, 8, 7]
+    for position, letter in zip(positions, word, strict=True):
+        letters[position // 5][position % 5].add(letter)
+    letters[2][3].add(word[-1])
+    multipliers = [["x3"] * 5 for _ in range(5)]
+    multipliers[0][0] = "c2"
+    multipliers[0][1] = "c3"
+    variants = {}
+    found = find_grail_words(
+        letters, multipliers, build_trie([word]), allow_empty_cells=True, series_results=variants
+    )
+    paths = {key[2] for key in variants}
+    assert len(paths) >= 2
+    assert tuple(positions) in paths
+    assert tuple(positions[:-1] + [13]) in paths
+    assert found[word]["score"] == max(item["score"] for item in variants.values())
+    for (_name, suffix, suffix_path), item in variants.items():
+        assert suffix == word
+        assert tuple(row * 5 + col for row, col, _letter in item["path"]) == suffix_path
+        assert item["score"] > 375
+
+
 def test_trie_populates_russian_children_masks():
     trie = build_trie(["\u0434\u043e\u043c", "\u043a\u043e\u0442", "\u0434\u043e\u043c"])
 
