@@ -29,7 +29,9 @@ def create_app() -> Flask:
     warnings.filterwarnings("ignore", category=FutureWarning)
 
     default_model_path = os.path.join(assets_dir, "letter_recognition_model.h5")
-    default_dictionary_path = os.path.join(assets_dir, "cleaned_filtered_russian_words.json")
+    default_dictionary_path = os.path.join(
+        assets_dir, "cleaned_filtered_russian_words_no_past.json"
+    )
 
     model_path = os.getenv("MODEL_PATH", default_model_path)
     dictionary_path = os.getenv("DICTIONARY_PATH", default_dictionary_path)

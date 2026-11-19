@@ -25,6 +25,12 @@ python -m backend.app
 ```
 Бэкенд стартует на: http://127.0.0.1:8000
 
+По умолчанию обычный решатель и оба этапа поиска Грааля используют словарь
+`backend/assets/cleaned_filtered_russian_words_no_past.json`. Путь можно заменить
+переменной окружения `DICTIONARY_PATH`; резервный словарь находится в
+`backend/assets/cleaned_filtered_russian_words.json`. Отладочный pipeline и benchmark
+используют тот же словарь по умолчанию и учитывают ту же переменную.
+
 ### Frontend
 
 Во втором терминале из корня проекта:

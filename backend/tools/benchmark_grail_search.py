@@ -22,7 +22,9 @@ LAYER_COUNT = 5
 
 def _dictionary_path():
     default_path = (
-        Path(__file__).resolve().parents[1] / "assets" / "cleaned_filtered_russian_words.json"
+        Path(__file__).resolve().parents[1]
+        / "assets"
+        / "cleaned_filtered_russian_words_no_past.json"
     )
     return Path(os.getenv("DICTIONARY_PATH", default_path))
 

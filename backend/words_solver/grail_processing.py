@@ -15,14 +15,12 @@ from .image_processing import TRANSLIT_TO_RUS, crop_board_image, recognize_board
 IMAGE_COUNT = 5
 MAX_WORDS = 500
 MAX_SERIES = 50
-MAX_SERIES_WORDS = 10
 MIN_SERIES_SUFFIX_LENGTH = 6
 MIN_WORD_SCORE = 400
-MIN_GOOD_WORDS = 3
+MIN_GOOD_WORDS = 8
 MAIN_EVALUATION_WINDOW = 25
 VALUE_EVALUATION_WINDOW = 15
 VALUE_LENGTH_PENALTY = 20
-NESTED_TOP5_PRESERVE_RATIO = 0.95
 
 
 def _load_known_bases():
@@ -121,7 +119,12 @@ def top_words(results, limit=MAX_WORDS):
 
 
 def _series_metrics(suffix, suffix_path, members):
-    members = sorted(members, key=lambda item: (-item["score"], item["name"]))
+    unique = {}
+    for member in members:
+        existing = unique.get(member["name"])
+        if existing is None or member["score"] > existing["score"]:
+            unique[member["name"]] = member
+    members = sorted(unique.values(), key=lambda item: (-item["score"], item["name"]))
     scores = [member["score"] for member in members]
     return {
         "suffix": suffix,
@@ -144,34 +147,20 @@ def build_series(results, min_suffix_length=MIN_SERIES_SUFFIX_LENGTH):
         path = tuple(row * GRID_SIZE + col for row, col, _letter in result["path"])
         for length in range(min_suffix_length, len(word) + 1):
             candidates.setdefault((word[-length:], path[-length:]), []).append(result)
-    groups = [item for item in candidates.items() if len(item[1]) >= 2]
-    specific = {}
-    priority_candidates = {}
-    for (suffix, path), members in groups:
-        if suffix in PRIORITY_SERIES_SUFFIXES:
-            priority_candidates[(suffix, path)] = (suffix, path, members)
-        key = frozenset(member["name"] for member in members)
-        existing = specific.get(key)
-        if existing is None or (len(suffix), suffix, path) > (
-            len(existing[0]),
-            existing[0],
-            existing[1],
-        ):
-            specific[key] = (suffix, path, members)
-    selected_candidates = list(specific.values())
-    selected_keys = {(suffix, path) for suffix, path, _members in selected_candidates}
-    selected_candidates.extend(
-        candidate for key, candidate in priority_candidates.items() if key not in selected_keys
-    )
     return [
-        _series_metrics(suffix, path, [m for m in members if m["score"] >= MIN_WORD_SCORE])
-        for suffix, path, members in selected_candidates
-        if sum(m["score"] >= MIN_WORD_SCORE for m in members) >= MIN_GOOD_WORDS
+        _series_metrics(suffix, path, members)
+        for (suffix, path), members in candidates.items()
+        if len({member["name"] for member in members}) >= MIN_GOOD_WORDS
     ]
 
 
 def _ranking_key(series):
+    high = sum(member["score"] >= MIN_WORD_SCORE for member in series["good_members"])
     return (
+        -series["good_count"],
+        -high,
+        -high / series["good_count"],
+        -series["average_score"],
         -series["top3_sum"],
         -series["top5_sum"],
         -series["good_count"],
@@ -181,15 +170,16 @@ def _ranking_key(series):
     )
 
 
-def _suppresses(longer, shorter):
-    return (
-        longer["suffix_length"] > shorter["suffix_length"]
-        and longer["suffix"].endswith(shorter["suffix"])
-        and longer["suffix_path"][-shorter["suffix_length"] :] == shorter["suffix_path"]
-        and [member["name"] for member in longer["good_members"][:3]]
-        == [member["name"] for member in shorter["good_members"][:3]]
-        and longer["top5_sum"] >= shorter["top5_sum"] * NESTED_TOP5_PRESERVE_RATIO
+def _suppresses(broad, nested):
+    broad_names = {member["name"] for member in broad["good_members"]}
+    nested_names = {member["name"] for member in nested["good_members"]}
+    contained = (
+        nested["suffix_length"] > broad["suffix_length"]
+        and nested["suffix"].endswith(broad["suffix"])
+        and nested["suffix_path"][-broad["suffix_length"] :] == broad["suffix_path"]
+        and len(broad_names & nested_names) >= 0.8 * len(nested_names)
     )
+    return contained
 
 
 def _merge_series_by_suffix(series):
@@ -414,51 +404,80 @@ def _with_role(series, role):
 
 def select_series(results, min_suffix_length=MIN_SERIES_SUFFIX_LENGTH):
     candidates = build_series(results, min_suffix_length)
-    priority = []
-    for suffix in PRIORITY_SERIES_SUFFIXES:
-        paths = [candidate for candidate in candidates if candidate["suffix"] == suffix]
-        if paths:
-            priority.extend(
-                (
-                    _with_role(min(paths, key=_main_key), "main"),
-                    _with_role(min(paths, key=_value_key), "value"),
-                )
-            )
-
     ordered = sorted(
-        candidates, key=lambda series: (-series["suffix_length"],) + _ranking_key(series)
+        candidates,
+        key=lambda item: (
+            -item["good_count"],
+            item["suffix"] not in PRIORITY_SERIES_SUFFIXES,
+            item["suffix_length"],
+            _ranking_key(item),
+        ),
     )
-    suppressors = []
     protected = []
     for candidate in ordered:
-        if candidate["suffix"] in PRIORITY_SERIES_SUFFIXES:
-            suppressors.append(candidate)
+        if any(
+            _suppresses(other, candidate)
+            or (
+                other["suffix"] in PRIORITY_SERIES_SUFFIXES
+                and other["good_count"] == candidate["good_count"]
+                and _suppresses(candidate, other)
+            )
+            for other in protected
+        ):
             continue
-        if any(_suppresses(longer, candidate) for longer in suppressors):
-            continue
-        suppressors.append(candidate)
         protected.append(candidate)
-    normal = []
-    for suffix in sorted({candidate["suffix"] for candidate in protected}):
+
+    priority = []
+    for suffix in PRIORITY_SERIES_SUFFIXES:
         paths = [candidate for candidate in protected if candidate["suffix"] == suffix]
-        normal.append(_with_role(min(paths, key=_value_key), "value"))
+        if paths:
+            main = min(paths, key=lambda item: (_ranking_key(item)[:3], _main_key(item)))
+            value = min(paths, key=lambda item: (_ranking_key(item)[:3], _value_key(item)))
+            priority.append(_with_role(main, "main"))
+            if main["suffix_path"] != value["suffix_path"] or {
+                m["name"] for m in main["good_members"]
+            } != {m["name"] for m in value["good_members"]}:
+                priority.append(_with_role(value, "value"))
+    normal = []
+    for suffix in sorted(
+        {candidate["suffix"] for candidate in protected} - set(PRIORITY_SERIES_SUFFIXES)
+    ):
+        paths = [candidate for candidate in protected if candidate["suffix"] == suffix]
+        normal.append(
+            _with_role(
+                min(paths, key=lambda item: (_ranking_key(item)[:3], _value_key(item))), "value"
+            )
+        )
     normal.sort(key=_ranking_key)
-    return (priority + normal)[:MAX_SERIES]
+    selected = []
+    for item in priority + normal:
+        if len(selected) >= MAX_SERIES and (
+            not selected or item["suffix"] != selected[-1]["suffix"]
+        ):
+            break
+        selected.append(item)
+    return selected
 
 
 def serialize_series(series):
     members = series.get("display_members", series["good_members"])
-    if series["suffix"] not in PRIORITY_SERIES_SUFFIXES:
-        members = members[:MAX_SERIES_WORDS]
+    metrics = _series_metrics(series["suffix"], series["suffix_path"], members)
+    best = {member["name"]: member for member in metrics["good_members"]}
+    names = set()
+    ordered_members = []
+    for member in members:
+        if member["name"] not in names:
+            names.add(member["name"])
+            ordered_members.append(best[member["name"]])
     payload = {
         "suffix": series["suffix"],
         "suffix_path": series["suffix_path"],
-        "good_count": series["good_count"],
-        "best_score": series["best_score"],
-        "top3_sum": series["top3_sum"],
-        "top5_sum": series["top5_sum"],
-        "average_score": series["average_score"],
-        "words": [serialize_word(member) for member in members],
+        "good_count": metrics["good_count"],
+        "best_score": metrics["best_score"],
+        "top3_sum": metrics["top3_sum"],
+        "top5_sum": metrics["top5_sum"],
+        "average_score": metrics["average_score"],
+        "words": [serialize_word(member) for member in ordered_members],
     }
     if "role" in series:
         payload["role"] = series["role"]
