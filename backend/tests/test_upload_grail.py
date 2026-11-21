@@ -241,7 +241,7 @@ def test_upload_grail_stream_yields_each_batch_before_full_search(monkeypatch):
     assert complete["type"] == "complete"
     assert complete["series"] == all_cards
     assert calls[-1] == "full"
-    assert complete["timings"]["processed_batches"] == 8
+    assert complete["timings"]["processed_batches"] == 10
     assert len(prepared_calls) == 1
     response.close()
 
@@ -306,7 +306,7 @@ def test_stream_filters_series_in_both_phases_with_fixed_suffix(monkeypatch):
         path = [(0, 0, name[0])] + [
             (position // 5, position % 5, letter) for position, letter in enumerate(suffix, start=1)
         ]
-        results[name] = {"name": name, "score": 500 if index < 8 else 375, "path": path}
+        results[name] = {"name": name, "score": 500 if index < 8 else 269, "path": path}
     prepared = {
         "cell_letters": [[{"a"}] * 5 for _ in range(5)],
         "multipliers": [[None] * 5 for _ in range(5)],
@@ -327,7 +327,7 @@ def test_stream_filters_series_in_both_phases_with_fixed_suffix(monkeypatch):
     )
     response = app.test_client().post("/upload-grail-stream", data={"images": _files(5)})
     events = [json.loads(line) for line in response.get_data(as_text=True).splitlines()]
-    assert [event["type"] for event in events] == ["priority"] + ["series_batch"] * 7 + ["complete"]
+    assert [event["type"] for event in events] == ["priority"] + ["series_batch"] * 9 + ["complete"]
     assert events[0]["series"] == events[-1]["series"]
     card = events[0]["series"][0]
     assert card["suffix"] == suffix
@@ -387,3 +387,84 @@ def test_stream_cross_batch_overlapping_suffixes_do_not_repeat_words(monkeypatch
     assert cards == [
         grail_processing.serialize_series(card) for card in grail_processing.select_series(results)
     ]
+
+
+def test_new_batch_overlap_caps_specific_and_returns_remaining_in_broad(monkeypatch):
+    from backend.words_solver import grail_processing
+    from backend.words_solver.grail_constants import GRAIL_SERIES_SUFFIXES
+
+    specific, broad = GRAIL_SERIES_SUFFIXES[9], GRAIL_SERIES_SUFFIXES[25]
+    results = {}
+    for start, count, ending in ((0x400, 40, specific), (0x500, 8, broad)):
+        for index in range(count):
+            name = chr(start + index) + ending
+            # Identical trailing cells give the broad ending one physical route.
+            tail = list(range(1, len(specific) + 1))[-len(ending) :]
+            path = [(0, 0, name[0])] + [
+                (position // 5, position % 5, letter)
+                for position, letter in zip(tail, ending, strict=True)
+            ]
+            results[name] = {"name": name, "score": 500 + index, "path": path}
+    prepared = {
+        "cell_letters": [[{"a"}] * 5 for _ in range(5)],
+        "multipliers": [[None] * 5 for _ in range(5)],
+        "timings": {"ocr_all_5_seconds": 0.0, "merge_seconds": 0.0},
+        "debug": {},
+    }
+    monkeypatch.setattr(routes, "prepare_grail_board", lambda *_args: prepared)
+
+    def search(_letters, _multipliers, suffixes, *, series_results=None):
+        found = {name: item for name, item in results.items() if name.endswith(suffixes)}
+        if series_results is not None:
+            series_results.update(found)
+        return found
+
+    monkeypatch.setattr(grail_processing, "find_grail_words", search)
+    app = Flask(__name__)
+    app.register_blueprint(
+        routes.create_routes(
+            object(),
+            (specific, broad),
+            batch_tries=[(batch, batch) for batch in GRAIL_SUFFIX_BATCHES],
+        )
+    )
+    response = app.test_client().post("/upload-grail-stream", data={"images": _files(5)})
+    events = [json.loads(line) for line in response.get_data(as_text=True).splitlines()]
+    assert [event["type"] for event in events] == ["priority"] + ["series_batch"] * 9 + ["complete"]
+    cards = events[-1]["series"]
+    assert [card["suffix"] for card in cards] == [specific, broad]
+    assert [card["good_count"] for card in cards] == [30, 18]
+    assert cards == [
+        grail_processing.serialize_series(card) for card in grail_processing.select_series(results)
+    ]
+    names = [word["name"] for card in cards for route in card["routes"] for word in route["words"]]
+    assert len(names) == len(set(names)) == 48
+
+
+def test_stream_complete_keeps_best_300_including_low_scores(monkeypatch):
+    prepared = {
+        "cell_letters": [[{"a"}] * 5 for _ in range(5)],
+        "multipliers": [[None] * 5 for _ in range(5)],
+        "timings": {"ocr_all_5_seconds": 0.0, "merge_seconds": 0.0},
+        "debug": {},
+    }
+    monkeypatch.setattr(routes, "prepare_grail_board", lambda *_args: prepared)
+    monkeypatch.setattr(
+        routes,
+        "search_grail_board",
+        lambda *_args: ({}, [], {"grail_search_seconds": 0.0, "series_processing_seconds": 0.0}),
+    )
+    results = {
+        f"word{i}": {"name": f"word{i}", "score": i % 270, "path": [(0, 0, "a")]}
+        for i in range(350)
+    }
+    monkeypatch.setattr(routes, "search_grail_best_words", lambda *_args: (results, 0.0))
+    app = Flask(__name__)
+    app.register_blueprint(routes.create_routes(object(), object()))
+    response = app.test_client().post("/upload-grail-stream", data={"images": _files(5)})
+    complete = json.loads(response.get_data(as_text=True).splitlines()[-1])
+    assert complete["type"] == "complete"
+    assert complete["meta"]["total_found"] == 350
+    assert complete["meta"]["returned_words"] == len(complete["words"]) == 300
+    assert all(word["score"] <= 269 for word in complete["words"])
+    assert complete["series"] == []

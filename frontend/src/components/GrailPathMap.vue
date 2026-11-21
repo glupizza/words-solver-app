@@ -113,8 +113,8 @@ export default {
   position: relative;
   z-index: 2;
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 3px;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-rows: repeat(5, minmax(0, 1fr));
 }
 
 .path-cell {
@@ -123,6 +123,8 @@ export default {
   align-items: center;
   justify-content: center;
   min-width: 0;
+  min-height: 0;
+  margin: 1.5px;
   border: 1px solid var(--border);
   border-radius: 7px;
   background: var(--surface-light);

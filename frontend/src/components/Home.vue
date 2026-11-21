@@ -178,6 +178,7 @@
                 <button
                   type="button"
                   class="series-header"
+                  :class="{ 'series-header-open': expandedSeries === series.suffix }"
                   :aria-expanded="expandedSeries === series.suffix"
                   @click="toggleSeries(series.suffix, $event)"
                 >
@@ -189,7 +190,6 @@
                   <section v-for="(route, routeIndex) in series.routes" :key="routeKey(series.suffix, route)" class="series-route">
                     <h3>Маршрут {{ routeIndex + 1 }} — {{ route.good_count }} слов · среднее {{ Math.round(route.average_score) }} оч.</h3>
                     <section v-for="(bundle, bundleIndex) in seriesBundles(series.suffix, route, Boolean(showAllSeriesWords[routeKey(series.suffix, route)]))" :key="bundleIndex" class="series-bundle">
-                      <h3>{{ bundle.label }} · {{ bundle.words.length }}</h3>
                       <article v-for="word in bundle.words" :key="word.name" class="grail-word-card compact-word-card">
                         <button type="button" class="grail-word-button" :aria-expanded="expandedSeriesWord === `${routeKey(series.suffix, route)}-${word.name}`" @click="toggleSeriesWord(routeKey(series.suffix, route), word)">
                           <strong>{{ word.name }}</strong><span class="score">{{ word.score }}</span><span v-if="viewedWordKeys[wordKey(word)]" class="viewed-mark" aria-label="Просмотрено">✓</span>
@@ -319,10 +319,12 @@ export default {
     toggleSeries(suffix, event) {
       const header = event.currentTarget;
       const beforeTop = header.getBoundingClientRect().top;
-      this.expandedSeries = this.expandedSeries === suffix ? null : suffix;
+      const closing = this.expandedSeries === suffix;
+      this.expandedSeries = closing ? null : suffix;
       this.expandedSeriesWord = null;
       this.$nextTick(() => {
-        window.scrollBy(0, header.getBoundingClientRect().top - beforeTop);
+        if (closing) header.scrollIntoView({ block: 'start', behavior: 'auto' });
+        else window.scrollBy(0, header.getBoundingClientRect().top - beforeTop);
       });
     },
     seriesBundles,
@@ -918,6 +920,15 @@ button:focus-visible,
   font-size: 0.84rem;
   text-align: left;
   cursor: pointer;
+  scroll-margin-top: env(safe-area-inset-top, 0px);
+}
+
+.series-header-open {
+  position: -webkit-sticky;
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 3;
+  background: var(--surface-light);
 }
 
 .series-header strong {
@@ -967,13 +978,6 @@ button:focus-visible,
 .series-bundle {
   display: grid;
   gap: 6px;
-}
-
-.series-bundle h3 {
-  margin: 0 0 5px;
-  color: var(--muted);
-  font-size: 0.8rem;
-  font-weight: 800;
 }
 
 .compact-word-card {

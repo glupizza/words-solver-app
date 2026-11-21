@@ -14,8 +14,9 @@ from .grail_search import GRID_SIZE, find_grail_words
 from .image_processing import TRANSLIT_TO_RUS, crop_board_image, recognize_board_cells
 
 IMAGE_COUNT = 5
-MAX_WORDS = 500
+MAX_WORDS = 300
 MIN_GOOD_WORDS = 8
+MAX_ROUTE_WORDS = 30
 
 
 class GrailMultiplierConflict(ValueError):
@@ -97,7 +98,10 @@ def _series_metrics(suffix, suffix_path, members):
     unique = {}
     for member in members:
         existing = unique.get(member["name"])
-        if existing is None or member["score"] > existing["score"]:
+        if existing is None or (-member["score"], member["path"]) < (
+            -existing["score"],
+            existing["path"],
+        ):
             unique[member["name"]] = member
     members = sorted(unique.values(), key=lambda item: (-item["score"], item["name"]))
     scores = [member["score"] for member in members]
@@ -133,9 +137,9 @@ def build_series(results):
 
 def _ranking_key(series):
     return (
-        -series["good_count"],
-        -sum(member["score"] for member in series["good_members"][:8]),
+        -sum(member["score"] for member in series["good_members"]),
         -series["average_score"],
+        -series["good_count"],
         tuple(series["suffix_path"]),
     )
 
@@ -169,7 +173,12 @@ def select_series(results):
                     member for member in item["good_members"] if member["name"] not in assigned
                 ]
                 if len(members) >= MIN_GOOD_WORDS:
-                    remaining.append(_series_metrics(suffix, item["suffix_path"], members))
+                    ranked = _series_metrics(suffix, item["suffix_path"], members)
+                    remaining.append(
+                        _series_metrics(
+                            suffix, item["suffix_path"], ranked["good_members"][:MAX_ROUTE_WORDS]
+                        )
+                    )
             if not remaining:
                 break
             best = min(remaining, key=_ranking_key)

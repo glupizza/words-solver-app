@@ -23,11 +23,19 @@ GRAIL_SERIES_SUFFIXES = (
     "\u0432\u0435\u0434\u0435\u043d\u0438\u0435",
     "\u043e\u0431\u0440\u0430\u0437\u043e\u0432\u0430\u043d\u0438\u0435",
     "\u0432\u043e\u0434\u0441\u0442\u0432\u043e",
+    "\u044b\u0432\u0430\u043d\u0438\u0435",
+    "\u044b\u0432\u0430\u0442\u044c\u0441\u044f",
+    "\u044b\u0432\u0430\u0442\u044c",
+    "\u0438\u0432\u0430\u043d\u0438\u0435",
+    "\u0438\u0432\u0430\u0442\u044c\u0441\u044f",
+    "\u0438\u0432\u0430\u0442\u044c",
+    "\u043e\u043b\u043e\u0442\u0438\u0442\u044c\u0441\u044f",
+    "\u043e\u043b\u043e\u0442\u0438\u0442\u044c",
 )
 
 # Keep the first streaming pass smaller than the full dictionary search.
 PRIORITY_SERIES_SUFFIXES = GRAIL_SERIES_SUFFIXES[:6]
-MIN_GRAIL_SERIES_WORD_SCORE = 375
+MIN_GRAIL_SERIES_WORD_SCORE = 269
 GRAIL_SUFFIX_BATCHES = tuple(
     GRAIL_SERIES_SUFFIXES[index : index + 3] for index in range(0, len(GRAIL_SERIES_SUFFIXES), 3)
 )

@@ -35,7 +35,7 @@ export function seriesBundles(suffix, route, showAll) {
   const fallback = new Map();
   words.filter((word) => remaining.has(word)).forEach((word) => {
     const prefix = Array.from(word.name).slice(0, -Array.from(suffix).length);
-    const link = prefix.at(-1) || '';
+    const link = prefix[prefix.length - 1] || '';
     if (!fallback.has(link)) fallback.set(link, []);
     fallback.get(link).push(word);
   });
@@ -47,7 +47,7 @@ export function seriesBundles(suffix, route, showAll) {
   });
 }
 
-const suffixOrder = 'ирование ироваться ировать ированный ировка строение аскивание аскиваться аскивать аривание ариваться аривать таться тать енный тельный ческий нность ность ведение образование водство'.split(' ');
+const suffixOrder = 'ирование ироваться ировать ированный ировка строение аскивание аскиваться аскивать аривание ариваться аривать таться тать енный тельный ческий нность ность ведение образование водство ывание ываться ывать ивание иваться ивать олотиться олотить'.split(' ');
 
 export function mergeSeries(current, incoming) {
   const bySuffix = new Map(current.map((series) => [series.suffix, series]));

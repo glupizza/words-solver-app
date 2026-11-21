@@ -55,6 +55,10 @@ def test_app_loads_one_dictionary_for_both_tries(monkeypatch, tmp_path):
     assert len(all_words) == 120429
     for suffixes, batch_words in batches:
         assert batch_words == tuple(word for word in all_words if word.lower().endswith(suffixes))
+    assert len(batches) == 10
+    for suffixes, batch_words in batches[-3:]:
+        for suffix in suffixes:
+            assert any(word.endswith(suffix) for word in batch_words)
 
     alternative = tmp_path / "alternative.json"
     alternative.write_text(
