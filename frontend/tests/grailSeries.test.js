@@ -63,6 +63,50 @@ test('long useful links win over larger short links and require matching cells',
   assert.equal(seriesBundles(suffix, { words: pair }, true).find((bundle) => bundle.label === 'мин + ирование').words.length, 2);
 });
 
+test('finished bundles with the same final letter stay adjacent in their original order', () => {
+  const suffix = 'ирование';
+  const makeWord = (prefix, linkPath) => ({
+    name: prefix + suffix,
+    score: 500,
+    path: [...Array(prefix.length - linkPath.length).fill(0), ...linkPath, ...Array(suffix.length).fill(20)],
+  });
+  const atin = ['аатин', 'батин'].map((prefix) => makeWord(prefix, [7, 8, 9, 10]));
+  const ton = ['атон', 'бтон'].map((prefix) => makeWord(prefix, [11, 12, 13]));
+  const on1 = ['аон', 'бон', 'вон'].map((prefix) => makeWord(prefix, [1, 2]));
+  const on2 = ['гон', 'дон'].map((prefix) => makeWord(prefix, [3, 4]));
+  const single = ['у', 'в', 'н'].map((prefix, index) => makeWord(prefix, [14 + index]));
+  const words = [...on1, ...single, ...atin, ...ton, ...on2];
+  const original = JSON.stringify(words);
+  const bundles = seriesBundles(suffix, { words }, true);
+  assert.deepEqual(bundles.map((bundle) => bundle.link), ['атин', 'тон', 'он', 'он', 'н', 'у', 'в']);
+  assert.deepEqual(bundles[0].words, atin);
+  assert.deepEqual(bundles[1].words, ton);
+  assert.deepEqual(bundles[2].words, on1);
+  assert.deepEqual(bundles[3].words, on2);
+  assert.deepEqual(bundles.slice(4).map((bundle) => bundle.words), [[single[2]], [single[0]], [single[1]]]);
+  const displayed = bundles.flatMap((bundle) => bundle.words);
+  assert.equal(displayed.length, words.length);
+  assert.equal(new Set(displayed).size, words.length);
+  assert.deepEqual(new Set(displayed), new Set(words));
+  assert.equal(JSON.stringify(words), original);
+});
+
+test('bundle ordering preserves the first twenty words and reveals the remaining ten', () => {
+  const suffix = 'ирование';
+  const words = Array.from({ length: 30 }, (_item, index) => ({
+    name: `${String.fromCharCode(0x410 + index)}${index % 2 ? 'н' : 'в'}${suffix}`,
+    score: 300 + index,
+    path: [index % 20, 21, ...Array(suffix.length).fill(22)],
+  }));
+  const route = { suffix_path: [22], words };
+  const initial = seriesBundles(suffix, route, false).flatMap((bundle) => bundle.words);
+  const expanded = seriesBundles(suffix, route, true).flatMap((bundle) => bundle.words);
+  assert.equal(initial.length, 20);
+  assert.deepEqual(new Set(initial), new Set(words.slice(0, 20)));
+  assert.equal(expanded.length, 30);
+  assert.deepEqual(new Set(expanded), new Set(words));
+});
+
 test('two routes reveal independently and retain their full metadata', async () => {
   const vite = await createServer({ server: { middlewareMode: true, ws: false }, appType: 'custom' });
   try {

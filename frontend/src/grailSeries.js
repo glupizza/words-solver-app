@@ -30,7 +30,7 @@ export function seriesBundles(suffix, route, showAll) {
     const members = candidatesForLink.filter((word) => remaining.has(word));
     if (members.length < 2) return;
     members.forEach((word) => remaining.delete(word));
-    bundles.push({ label: `${link} + ${suffix}`, words: members });
+    bundles.push({ link, label: `${link} + ${suffix}`, words: members });
   });
   const fallback = new Map();
   words.filter((word) => remaining.has(word)).forEach((word) => {
@@ -39,9 +39,18 @@ export function seriesBundles(suffix, route, showAll) {
     if (!fallback.has(link)) fallback.set(link, []);
     fallback.get(link).push(word);
   });
-  fallback.forEach((members, link) => bundles.push({ label: link ? `${link} + ${suffix}` : suffix, words: members }));
+  fallback.forEach((members, link) => bundles.push({ link, label: link ? `${link} + ${suffix}` : suffix, words: members }));
+  const byLastLetter = new Map();
+  bundles.forEach((bundle) => {
+    const letters = Array.from(bundle.link);
+    const lastLetter = letters[letters.length - 1] || '';
+    if (!byLastLetter.has(lastLetter)) byLastLetter.set(lastLetter, []);
+    byLastLetter.get(lastLetter).push(bundle);
+  });
   const visible = new Set(visibleSeriesWords(route, showAll));
-  return bundles.flatMap((bundle) => {
+  const ordered = [];
+  byLastLetter.forEach((group) => ordered.push(...group));
+  return ordered.flatMap((bundle) => {
     const selected = bundle.words.filter((word) => visible.has(word));
     return selected.length ? [{ ...bundle, words: selected }] : [];
   });
