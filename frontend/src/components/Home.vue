@@ -214,6 +214,7 @@
 <script>
 import GrailPathMap from './GrailPathMap.vue';
 import { mergeSeries, routeKey, seriesBundles } from '../grailSeries.js';
+import { debugSeriesClick, debugSeriesState, debugSeriesUpdate, debugSeriesTick, debugSeriesScroll } from '../grailDebug.js';
 
 export default {
   name: 'Home',
@@ -318,13 +319,17 @@ export default {
     },
     toggleSeries(suffix, event) {
       const header = event.currentTarget;
+      debugSeriesClick(this, suffix, header);
       const beforeTop = header.getBoundingClientRect().top;
       const closing = this.expandedSeries === suffix;
       this.expandedSeries = closing ? null : suffix;
+      debugSeriesState(this);
       this.expandedSeriesWord = null;
       this.$nextTick(() => {
+        debugSeriesTick(this, suffix, header);
         if (closing) header.scrollIntoView({ block: 'start', behavior: 'auto' });
         else window.scrollBy(0, header.getBoundingClientRect().top - beforeTop);
+        debugSeriesScroll(header);
       });
     },
     seriesBundles,
@@ -498,6 +503,12 @@ export default {
         this.grailErrorMessage = fallbackMessage;
       }
     },
+  },
+  beforeUpdate() {
+    debugSeriesUpdate('beforeUpdate');
+  },
+  updated() {
+    debugSeriesUpdate('updated');
   },
   beforeUnmount() {
     this.abortGrailStream();

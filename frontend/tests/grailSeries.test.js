@@ -1,10 +1,78 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { readFile } from 'node:fs/promises';
-import { createSSRApp } from 'vue';
+import { createRenderer, createSSRApp } from 'vue';
 import { renderToString } from '@vue/server-renderer';
 import { createServer } from 'vite';
 import { mergeSeries, seriesBundles, visibleSeriesWords } from '../src/grailSeries.js';
+import { debugSeriesClick, debugSeriesScroll, debugSeriesState, debugSeriesTick, debugSeriesUpdate, installGrailDebug } from '../src/grailDebug.js';
+
+function debugEnvironment(search) {
+  const nodes = [];
+  const listeners = {};
+  const element = (tag) => {
+    const node = { tag, style: {}, children: [], value: '', addEventListener() {}, setAttribute() {},
+      appendChild(child) { this.children.push(child); },
+      insertBefore(child) { this.children.unshift(child); }, focus() {}, select() {} };
+    nodes.push(node);
+    return node;
+  };
+  return {
+    nodes, listeners,
+    document: { createElement: element, body: element('body') },
+    window: { location: { search }, addEventListener(name, handler) { listeners[name] = handler; } },
+  };
+}
+
+test('diagnostics stay disabled without the explicit query parameter', () => {
+  const env = debugEnvironment('?grail_debug=0');
+  const handler = () => {};
+  const app = { config: { errorHandler: handler } };
+  installGrailDebug(app, env.window, env.document);
+  assert.equal(env.document.body.children.length, 0);
+  assert.deepEqual(env.listeners, {});
+  assert.equal(app.config.errorHandler, handler);
+});
+
+test('a Vue render exception reaches the external diagnostic panel and the previous handler', () => {
+  const env = debugEnvironment('?grail_debug=1');
+  const renderer = createRenderer({
+    createElement: () => ({}), createText: () => ({}), createComment: () => ({}),
+    setText() {}, setElementText() {}, patchProp() {}, insert() {}, remove() {},
+    parentNode: () => null, nextSibling: () => null,
+  });
+  const app = renderer.createApp({ render() { throw new Error('Ошибка проверки рендера'); } });
+  const received = [];
+  app.config.errorHandler = (error) => received.push(error.message);
+  installGrailDebug(app, env.window, env.document);
+  app.mount({});
+  const panel = env.document.body.children[0];
+  const textarea = panel.children.find((node) => node.tag === 'textarea');
+  assert.match(textarea.value, /Ошибка Vue.*Ошибка проверки рендера/);
+  assert.deepEqual(received, ['Ошибка проверки рендера']);
+  assert.equal(typeof env.listeners.error, 'function');
+  assert.equal(typeof env.listeners.unhandledrejection, 'function');
+  env.window.scrollY = 42;
+  env.window.innerHeight = 800;
+  env.window.getComputedStyle = () => ({ display: 'grid', visibility: 'visible', opacity: '1' });
+  const route = { getBoundingClientRect: () => ({ top: 100, height: 200 }) };
+  const card = { getBoundingClientRect: () => ({ height: 300 }), querySelectorAll: () => [route, route] };
+  const header = { closest: () => card, getBoundingClientRect: () => ({ top: 10 }) };
+  const state = { grailSeries: [{ suffix: 'ировать', routes: [{}, {}] }], expandedSeries: null };
+  debugSeriesClick(state, 'ировать', header);
+  state.expandedSeries = 'ировать';
+  debugSeriesState(state);
+  debugSeriesUpdate('beforeUpdate');
+  debugSeriesUpdate('updated');
+  debugSeriesTick(state, 'ировать', header);
+  debugSeriesScroll(header);
+  assert.match(textarea.value, /Нажатие: ировать; маршрутов: 2/);
+  assert.match(textarea.value, /Состояние expandedSeries: ировать/);
+  assert.match(textarea.value, /Vue beforeUpdate/);
+  assert.match(textarea.value, /Vue updated/);
+  assert.match(textarea.value, /DOM маршрутов: 2/);
+  assert.match(textarea.value, /Коррекция прокрутки выполнена/);
+});
 
 test('all thirty endings stay in the agreed order without duplicate cards', () => {
   const suffixes = 'ирование ироваться ировать ированный ировка строение аскивание аскиваться аскивать аривание ариваться аривать таться тать енный тельный ческий нность ность ведение образование водство ывание ываться ывать ивание иваться ивать олотиться олотить'.split(' ');
@@ -119,20 +187,20 @@ test('two routes reveal independently and retain their full metadata', async () 
         path: Array.from({ length: `${prefix}${index}suffix`.length }, (_cell, position) => position),
       })),
     });
-    const routes = [makeRoute('first', 30), makeRoute('second', 23)];
+    const routes = [makeRoute('first', 30), makeRoute('second', 30)];
     assert.equal(visibleSeriesWords(routes[0], false).length, 20);
     const Component = {
       ...Home,
       data() {
         return { ...Home.data(), mode: 'grail', grailHasSearched: true, expandedSeries: 'suffix',
           showAllSeriesWords: { 'suffix|1': true },
-          grailSeries: [{ suffix: 'suffix', good_count: 53, average_score: 500, routes }] };
+          grailSeries: [{ suffix: 'suffix', good_count: 60, average_score: 500, routes }] };
       },
     };
     const html = await renderToString(createSSRApp(Component));
     assert.match(html, /first24suffix/);
     assert.doesNotMatch(html, /second20suffix/);
-    assert.match(html, /Показать ещё \(3\)/);
+    assert.match(html, /Показать ещё \(10\)/);
     assert.match(html, /Свернуть/);
     assert.match(html, /Маршрут 1/);
     assert.match(html, /Маршрут 2/);
@@ -171,7 +239,7 @@ test('two routes reveal independently and retain their full metadata', async () 
     assert.equal(state2.grailSearchingRemaining, false);
 
     const state3 = { ...Home.data(), ...Home.methods, grailRequestToken: 1,
-      mode: 'grail', grailHasSearched: true, grailSeries: [{ suffix: 'suffix', good_count: 53, average_score: 500, routes }] };
+      mode: 'grail', grailHasSearched: true, grailSeries: [{ suffix: 'suffix', good_count: 60, average_score: 500, routes }] };
     let afterRender;
     state3.$nextTick = (callback) => { afterRender = callback; };
     let top = 100;
