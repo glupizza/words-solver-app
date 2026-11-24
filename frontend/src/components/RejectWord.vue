@@ -21,18 +21,18 @@ export default {
 };
 </script>
 <style scoped>
-.reject-word { padding: 10px 0 2px; }
+.reject-word { display: flex; flex-direction: column; align-items: stretch; gap: 8px; min-width: 0; margin: 6px 10px 10px; padding: 12px 0 0; border-top: 1px solid var(--border); }
 .reject-word button { min-height: 44px; padding: 10px 14px; border: 1px solid var(--border); border-radius: 10px; font-weight: 700; cursor: pointer; }
 .reject-word button:focus-visible { outline: 3px solid var(--color-warm); outline-offset: 2px; }
 .reject-word button:disabled { cursor: not-allowed; opacity: .55; }
 .reject-trigger, .confirm-cancel { background: var(--surface); color: var(--accent-hover); }
+.reject-trigger { align-self: flex-end; max-width: 100%; }
 .reject-trigger:hover, .confirm-cancel:hover { background: var(--surface-light); border-color: var(--accent); }
-.reject-confirm { padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-light); }
-.reject-confirm p { margin: 0 0 10px; color: var(--muted); font-size: .9rem; }
+.reject-confirm { width: 100%; min-width: 0; }
+.reject-confirm p { margin: 0 0 10px; color: var(--muted); font-size: .9rem; overflow-wrap: anywhere; }
 .reject-confirm .confirm-title { color: var(--text); font-size: 1rem; font-weight: 800; overflow-wrap: anywhere; }
-.confirm-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 14px; }
+.confirm-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 .confirm-submit { border-color: var(--accent) !important; background: var(--accent); color: #fff; }
 .confirm-submit:hover { background: var(--accent-hover); }
 .reject-confirm .confirm-error { margin: 12px 0 0; color: #774b43; }
-@media (max-width: 380px) { .confirm-actions button { flex: 1 1 auto; } }
 </style>
