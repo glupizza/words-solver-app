@@ -99,7 +99,7 @@ def _ndjson_event(payload):
     )
 
 
-def create_routes(model, trie, priority_trie=None, batch_tries=None):
+def create_routes(model, trie, priority_trie=None, batch_tries=None, rejected_store=None):
     bp = Blueprint("routes", __name__)
     if batch_tries is None:
         batch_tries = [(suffixes, priority_trie or trie) for suffixes in GRAIL_SUFFIX_BATCHES]
@@ -168,7 +168,12 @@ def create_routes(model, trie, priority_trie=None, batch_tries=None):
                 shutil.copyfileobj(file.stream, temporary_file)
 
             t0 = time.perf_counter()
+            rejected = rejected_store.snapshot() if rejected_store else frozenset()
             result = process_image(tmp_path, model=model, trie=trie)
+            if "words" in result:
+                result["words"] = [
+                    word for word in result["words"] if word["name"].lower() not in rejected
+                ]
             elapsed = time.perf_counter() - t0
 
             metrics.add("app_process_image_seconds_sum", elapsed)
@@ -198,7 +203,9 @@ def create_routes(model, trie, priority_trie=None, batch_tries=None):
         paths = []
         try:
             paths = _save_grail_files(files)
-            result = process_grail_images(paths, model=model, trie=trie)
+            rejected = rejected_store.snapshot() if rejected_store else None
+            kwargs = {"rejected": rejected} if rejected is not None else {}
+            result = process_grail_images(paths, model=model, trie=trie, **kwargs)
             result.pop("timings", None)
             result.pop("debug", None)
             return json_response(result, status=200)
@@ -220,6 +227,7 @@ def create_routes(model, trie, priority_trie=None, batch_tries=None):
         paths = []
         try:
             paths = _save_grail_files(files)
+            rejected = rejected_store.snapshot() if rejected_store else None
             prepared = prepare_grail_board(paths, model)
         except GrailMultiplierConflict as exc:
             logger.info("grail multiplier conflict err=%s", exc)
@@ -241,7 +249,10 @@ def create_routes(model, trie, priority_trie=None, batch_tries=None):
                 time_to_first_nonempty = None
                 for index, (suffixes, batch_trie) in enumerate(batch_tries):
                     results, series, timings = search_grail_board(
-                        prepared["cell_letters"], prepared["multipliers"], batch_trie
+                        prepared["cell_letters"],
+                        prepared["multipliers"],
+                        batch_trie,
+                        **({"rejected": rejected} if rejected is not None else {}),
                     )
                     batch_search_seconds += timings["grail_search_seconds"]
                     batch_processing_seconds += timings["series_processing_seconds"]
@@ -271,7 +282,10 @@ def create_routes(model, trie, priority_trie=None, batch_tries=None):
                         }
                     )
                 full_results, best_search_seconds = search_grail_best_words(
-                    prepared["cell_letters"], prepared["multipliers"], trie
+                    prepared["cell_letters"],
+                    prepared["multipliers"],
+                    trie,
+                    **({"rejected": rejected} if rejected is not None else {}),
                 )
                 complete = grail_result_from_search(
                     prepared,

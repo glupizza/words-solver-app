@@ -1,5 +1,8 @@
 <template>
   <main class="home">
+    <div v-if="adminMode && !adminAuthorized"><p>{{ adminLoading ? 'Проверяем сессию…' : 'Для редактирования войдите как администратор.' }}</p><router-link v-if="!adminLoading" to="/admin">Войти</router-link></div>
+    <template v-else>
+    <nav v-if="adminMode"><router-link to="/admin">Администрирование</router-link> · <router-link to="/admin/rejected">Исключённые слова</router-link></nav>
     <section class="hero-card">
       <div class="hero-copy">
         <p class="eyebrow">Word Solver</p>
@@ -162,19 +165,19 @@
           <div v-if="grailTab === 'best'">
             <div v-if="grailWords.length === 0" class="empty">Слова не найдены</div>
             <div v-else class="grail-word-list">
-              <article v-for="(word, index) in grailWords" :key="`best-${word.name}-${index}`" class="grail-word-card">
+              <article v-for="(word, index) in visibleGrailWords" :key="`best-${word.name}-${index}`" class="grail-word-card">
                 <button type="button" class="grail-word-button" :aria-expanded="expandedBestWord === index" @click="toggleBestWord(index, word)">
                   <strong>{{ word.name }}</strong><span class="score">{{ word.score }}</span><span v-if="viewedWordKeys[wordKey(word)]" class="viewed-mark" aria-label="Просмотрено">✓</span>
                 </button>
-                <GrailPathMap v-if="expandedBestWord === index" :word="word.name" :path="word.path" />
+                <template v-if="expandedBestWord === index"><GrailPathMap :word="word.name" :path="word.path" /><RejectWord v-if="adminAuthorized && adminMode" :word="word.name" @rejected="onRejected" /></template>
               </article>
             </div>
           </div>
 
           <div v-else>
-            <div v-if="grailSeries.length === 0 && !grailSearchingRemaining" class="empty">Серии не найдены</div>
-            <div v-else-if="grailSeries.length" class="series-list">
-              <article v-for="series in grailSeries" :key="series.suffix" class="series-card">
+            <div v-if="visibleGrailSeries.length === 0 && !grailSearchingRemaining" class="empty">Серии не найдены</div>
+            <div v-else-if="visibleGrailSeries.length" class="series-list">
+              <article v-for="series in visibleGrailSeries" :key="series.suffix" class="series-card">
                 <button
                   type="button"
                   class="series-header"
@@ -187,14 +190,14 @@
                   <span>среднее {{ Math.round(series.average_score) }} оч.</span>
                 </button>
                 <div v-if="expandedSeries === series.suffix" class="series-words">
-                  <section v-for="(route, routeIndex) in series.routes" :key="routeKey(series.suffix, route)" class="series-route">
-                    <h3>Маршрут {{ routeIndex + 1 }} — {{ route.good_count }} слов · среднее {{ Math.round(route.average_score) }} оч.</h3>
+                  <section v-for="route in series.routes" :key="routeKey(series.suffix, route)" class="series-route">
+                    <h3>Маршрут {{ route.originalRouteIndex + 1 }} — {{ route.good_count }} слов · среднее {{ Math.round(route.average_score) }} оч.</h3>
                     <section v-for="(bundle, bundleIndex) in seriesBundles(series.suffix, route, Boolean(showAllSeriesWords[routeKey(series.suffix, route)]))" :key="bundleIndex" class="series-bundle">
                       <article v-for="word in bundle.words" :key="word.name" class="grail-word-card compact-word-card">
                         <button type="button" class="grail-word-button" :aria-expanded="expandedSeriesWord === `${routeKey(series.suffix, route)}-${word.name}`" @click="toggleSeriesWord(routeKey(series.suffix, route), word)">
                           <strong>{{ word.name }}</strong><span class="score">{{ word.score }}</span><span v-if="viewedWordKeys[wordKey(word)]" class="viewed-mark" aria-label="Просмотрено">✓</span>
                         </button>
-                        <GrailPathMap v-if="expandedSeriesWord === `${routeKey(series.suffix, route)}-${word.name}`" :word="word.name" :path="word.path" :suffix="series.suffix" />
+                        <template v-if="expandedSeriesWord === `${routeKey(series.suffix, route)}-${word.name}`"><GrailPathMap :word="word.name" :path="word.path" :suffix="series.suffix" /><RejectWord v-if="adminAuthorized && adminMode" :word="word.name" @rejected="onRejected" /></template>
                       </article>
                     </section>
                     <button v-if="route.words.length > 20" type="button" class="series-more" @click="toggleRouteWords(routeKey(series.suffix, route))">
@@ -208,19 +211,25 @@
         </template>
       </aside>
     </section>
+    <div v-if="undoWord" class="notice" role="status">Слово исключено <button :disabled="undoBusy" @click="undoReject">Отменить</button></div>
+    <p v-if="adminError" class="notice" role="alert">{{ adminError }}</p>
+    </template>
   </main>
 </template>
 
 <script>
 import GrailPathMap from './GrailPathMap.vue';
+import RejectWord from './RejectWord.vue';
+import { session, adminRequest } from '../adminApi.js';
 import { mergeSeries, routeKey, seriesBundles } from '../grailSeries.js';
 import { debugSeriesClick, debugSeriesState, debugSeriesUpdate, debugSeriesTick, debugSeriesScroll } from '../grailDebug.js';
 
 export default {
   name: 'Home',
-  components: { GrailPathMap },
+  components: { GrailPathMap, RejectWord },
   data() {
     return {
+      adminAuthorized: false, adminLoading: true, adminError: '', hiddenWords: [], undoWord: '', undoTimer: null, undoBusy: false,
       mode: 'normal',
       selectedImage: null,
       results: [],
@@ -246,7 +255,52 @@ export default {
       grailRequestToken: 0,
     };
   },
+  computed: {
+    adminMode() { return this.$route?.path === '/admin/solver'; },
+    visibleGrailWords() { return this.grailWords.filter((word) => !this.hiddenWords.includes(word.name)); },
+    visibleGrailSeries() {
+      return this.grailSeries.map((series) => {
+        const routes = series.routes.map((route, originalRouteIndex) => {
+          const words = route.words.filter((word) => !this.hiddenWords.includes(word.name));
+          return { ...route, originalRouteIndex, words, good_count: words.length, average_score: words.length ? words.reduce((sum, word) => sum + word.score, 0) / words.length : 0 };
+        }).filter((route) => route.words.length > 0);
+        const words = routes.flatMap((route) => route.words);
+        return { ...series, routes, good_count: words.length, average_score: words.length ? words.reduce((sum, word) => sum + word.score, 0) / words.length : 0 };
+      }).filter((series) => series.routes.length > 0);
+    },
+  },
+  async mounted() {
+    this.restoreSnapshot();
+    window.addEventListener('pagehide', this.saveSnapshot);
+    if (this.adminMode) { try { this.adminAuthorized = await session(); } catch (_error) { this.adminError = 'Не удалось проверить сессию'; } }
+    this.adminLoading = false;
+  },
   methods: {
+    onRejected(word, created) { clearTimeout(this.undoTimer); this.hiddenWords = [...this.hiddenWords, word]; this.expandedBestWord = null; this.undoWord = created ? word : ''; this.adminError = created ? '' : 'Слово уже исключено'; if (created) this.undoTimer = setTimeout(() => { this.undoWord = ''; }, 3000); },
+    async undoReject() {
+      if (this.undoBusy || !this.undoWord) return;
+      const word = this.undoWord; clearTimeout(this.undoTimer); this.undoBusy = true;
+      try { await adminRequest('rejected/restore', { word }); this.hiddenWords = this.hiddenWords.filter((item) => item !== word); if (this.undoWord === word) this.undoWord = '';  }
+      catch (error) { this.adminError = error.message; if (this.undoWord === word) this.undoWord = '';  }
+      finally { this.undoBusy = false; }
+    },
+    saveSnapshot() {
+      try {
+        const keys = ['mode', 'results', 'hasSearched', 'grailWords', 'grailSeries', 'grailComplete', 'grailHasSearched', 'grailTab', 'expandedBestWord', 'expandedSeries', 'expandedSeriesWord', 'showAllSeriesWords', 'viewedWordKeys', 'hiddenWords'];
+        const state = Object.fromEntries(keys.map((key) => [key, this[key]]));
+        const data = JSON.stringify({ version: 1, time: Date.now(), state });
+        if (data.length < 2000000) sessionStorage.setItem('worder-results', data);
+      } catch (_error) { /* Storage is optional. */ }
+    },
+    restoreSnapshot() {
+      try {
+        const data = JSON.parse(sessionStorage.getItem('worder-results') || 'null');
+        if (data && data.version === 1 && Date.now() - data.time < 3600000 && data.state) {
+          const keys = ['mode', 'results', 'hasSearched', 'grailWords', 'grailSeries', 'grailComplete', 'grailHasSearched', 'grailTab', 'expandedBestWord', 'expandedSeries', 'expandedSeriesWord', 'showAllSeriesWords', 'viewedWordKeys', 'hiddenWords'];
+          keys.forEach((key) => { if (key in data.state) this[key] = data.state[key]; });
+        }
+      } catch (_error) { /* Storage is optional. */ }
+    },
     handleFileChange(event) {
       this.selectedImage = event.target.files[0] || null;
       this.errorMessage = '';
@@ -345,6 +399,7 @@ export default {
     async uploadImage() {
       if (!this.selectedImage) return;
 
+      this.hiddenWords = [];
       this.loading = true;
       this.errorMessage = '';
       this.hasSearched = false;
@@ -376,6 +431,7 @@ export default {
     async uploadGrailImages() {
       if (this.grailFiles.length !== 5 || this.grailLoading || this.grailSearchingRemaining) return;
 
+      this.hiddenWords = [];
       this.abortGrailStream();
       const requestToken = this.grailRequestToken + 1;
       const controller = new AbortController();
@@ -511,6 +567,9 @@ export default {
     debugSeriesUpdate('updated');
   },
   beforeUnmount() {
+    this.saveSnapshot();
+    window.removeEventListener('pagehide', this.saveSnapshot);
+    clearTimeout(this.undoTimer);
     this.abortGrailStream();
     this.clearGrailPreviews();
   },

@@ -1,18 +1,22 @@
+import ipaddress
 import logging
 import os
 import time
 import warnings
+from datetime import timedelta
 
 from dotenv import load_dotenv
 from flask import Flask, Response, g, request, send_from_directory
 from werkzeug.exceptions import NotFound, RequestEntityTooLarge
 
 from backend.words_solver import metrics
+from backend.words_solver.admin import create_admin_routes
 from backend.words_solver.dictionary import build_trie, load_words
 from backend.words_solver.grail_constants import GRAIL_SUFFIX_BATCHES
 from backend.words_solver.http import error_response, json_response
 from backend.words_solver.logging_config import configure_logging, request_id_var, set_request_id
 from backend.words_solver.model import load_letter_model
+from backend.words_solver.rejected import RejectedStore
 from backend.words_solver.routes import create_routes
 
 logger = logging.getLogger(__name__)
@@ -40,6 +44,25 @@ def create_app() -> Flask:
     logger.info("using dictionary_path=%s", dictionary_path)
 
     app = Flask(__name__, static_folder="static")
+
+    app.secret_key = os.environ["FLASK_SECRET_KEY"]
+    if not app.secret_key or not os.environ.get("ADMIN_PASSWORD_HASH"):
+        raise RuntimeError("FLASK_SECRET_KEY and ADMIN_PASSWORD_HASH must be configured")
+    app.config.update(
+        ADMIN_PASSWORD_HASH=os.environ["ADMIN_PASSWORD_HASH"],
+        TRUSTED_PROXY_CIDRS=tuple(
+            ipaddress.ip_network(value.strip(), strict=False)
+            for value in os.getenv("TRUSTED_PROXY_CIDRS", "").split(",")
+            if value.strip()
+        ),
+        PERMANENT_SESSION_LIFETIME=timedelta(days=90),
+        SESSION_COOKIE_SECURE=True,
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        SESSION_REFRESH_EACH_REQUEST=False,
+    )
+    store = RejectedStore(os.environ.get("REJECTED_WORDS_DB_PATH", "/data/rejected_words.sqlite3"))
+    app.register_blueprint(create_admin_routes(store))
 
     max_upload_bytes = int(os.getenv("MAX_UPLOAD_BYTES", str(5 * 1024 * 1024)))
     app.config["MAX_CONTENT_LENGTH"] = max_upload_bytes
@@ -106,7 +129,9 @@ def create_app() -> Flask:
         for suffixes in GRAIL_SUFFIX_BATCHES
     ]
 
-    app.register_blueprint(create_routes(model=model, trie=trie, batch_tries=batch_tries))
+    app.register_blueprint(
+        create_routes(model=model, trie=trie, batch_tries=batch_tries, rejected_store=store)
+    )
 
     @app.get("/health")
     def health():

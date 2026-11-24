@@ -42,4 +42,5 @@ docker:
 	docker build -t words-solver:local .
 
 docker-run:
-	docker run --rm -p 8000:8000 words-solver:local
+	docker run --rm -p 127.0.0.1:8000:8000 --env-file "$${WORDER_ENV_FILE:?Set WORDER_ENV_FILE}" \
+	  --mount "type=bind,src=$${WORDER_DATA_DIR:?Set WORDER_DATA_DIR},dst=/data" words-solver:local

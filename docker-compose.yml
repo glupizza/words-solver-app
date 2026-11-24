@@ -6,14 +6,13 @@ services:
     restart: unless-stopped
 
     ports:
-      - "8000:8000"
+      - "127.0.0.1:8000:8000"
 
-    environment:
-      PORT: "8000"
-      TF_CPP_MIN_LOG_LEVEL: "3"
-      MAX_UPLOAD_BYTES: "5242880"
-      SMART_CROP: "1"
-      ENABLE_METRICS: "1"
+    env_file:
+      - ${WORDER_ENV_FILE:-/opt/worder/worder.env}
+
+    volumes:
+      - ${WORDER_DATA_DIR:-/opt/worder/data}:/data
 
     logging:
       driver: "json-file"

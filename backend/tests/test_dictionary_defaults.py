@@ -42,7 +42,11 @@ def test_app_loads_one_dictionary_for_both_tries(monkeypatch, tmp_path):
     monkeypatch.setattr(model, "load_letter_model", lambda _path: object())
     monkeypatch.setattr(dictionary, "build_trie", lambda words: tuple(words))
 
-    def capture_routes(model, trie, batch_tries):
+    monkeypatch.setenv("FLASK_SECRET_KEY", "test-secret")
+    monkeypatch.setenv("ADMIN_PASSWORD_HASH", "test-hash")
+    monkeypatch.setenv("REJECTED_WORDS_DB_PATH", str(tmp_path / "rejected.sqlite3"))
+
+    def capture_routes(model, trie, batch_tries, rejected_store):
         observed.append((trie, batch_tries))
         return Blueprint("test_routes", __name__)
 

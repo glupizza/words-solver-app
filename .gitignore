@@ -48,3 +48,17 @@ __MACOSX/
 # Cache
 .ruff_cache/
 .pytest_cache/
+
+# SQLite data and administrator secrets
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+.env.*
+!.env.example
+data/
+
+# Administrator environment files
+worder.env
+worder.env.*

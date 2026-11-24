@@ -22,3 +22,18 @@ mongo-data
 .vscode
 .idea
 *.iml
+
+.env
+.env.*
+*.sqlite
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+data/
+
+# Administrator environment files
+worder.env
+worder.env.*
+**/worder.env
+**/worder.env.*

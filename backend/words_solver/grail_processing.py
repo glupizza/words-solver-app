@@ -259,11 +259,15 @@ def prepare_grail_board(paths, model):
     }
 
 
-def search_grail_board(cell_letters, multipliers, trie):
+def search_grail_board(cell_letters, multipliers, trie, rejected=frozenset()):
     """Run the existing Grail DFS and series selection on a prepared board."""
     search_started = time.perf_counter()
     series_results = {}
     results = find_grail_words(cell_letters, multipliers, trie, series_results=series_results)
+    results = {key: value for key, value in results.items() if value["name"] not in rejected}
+    series_results = {
+        key: value for key, value in series_results.items() if value["name"] not in rejected
+    }
     search_seconds = time.perf_counter() - search_started
     series_started = time.perf_counter()
     series = select_series(series_results)
@@ -278,11 +282,13 @@ def search_grail_board(cell_letters, multipliers, trie):
     )
 
 
-def search_grail_best_words(cell_letters, multipliers, trie):
+def search_grail_best_words(cell_letters, multipliers, trie, rejected=frozenset()):
     """Find the best-scoring path per word without collecting series variants."""
     started = time.perf_counter()
     results = find_grail_words(cell_letters, multipliers, trie)
-    return results, time.perf_counter() - started
+    return {
+        key: value for key, value in results.items() if value["name"] not in rejected
+    }, time.perf_counter() - started
 
 
 def grail_result_from_search(prepared, results, series, search_timings):
@@ -303,11 +309,11 @@ def grail_result_from_search(prepared, results, series, search_timings):
     }
 
 
-def process_grail_images(paths, model, trie):
+def process_grail_images(paths, model, trie, rejected=frozenset()):
     started = time.perf_counter()
     prepared = prepare_grail_board(paths, model)
     results, series, search_timings = search_grail_board(
-        prepared["cell_letters"], prepared["multipliers"], trie
+        prepared["cell_letters"], prepared["multipliers"], trie, rejected
     )
     result = grail_result_from_search(prepared, results, series, search_timings)
     result["timings"]["request_core_seconds"] = time.perf_counter() - started
