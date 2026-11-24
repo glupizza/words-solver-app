@@ -140,3 +140,155 @@ test('login and logout rotate CSRF headers for subsequent protected requests', a
     assert.equal(responses.length, 0);
   } finally { globalThis.fetch = oldFetch; await vite.close(); }
 });
+
+test('editing controls and fixed undo notification appear only in the admin solver', async () => {
+  const { readFile } = await import('node:fs/promises');
+  const source = await readFile(new URL('../src/components/Home.vue', import.meta.url), 'utf8');
+  assert.match(source, /\.admin-toast\s*\{[^}]*position:\s*fixed;[^}]*z-index:\s*1000;[^}]*safe-area-inset-bottom/s);
+  assert.match(source, /v-if="adminMode && \(undoWord \|\| adminError\)"/);
+  const vite = await createServer({ server: { middlewareMode: true, ws: false }, appType: 'custom' });
+  try {
+    const { default: Home } = await vite.ssrLoadModule('/src/components/Home.vue');
+    const state = { ...Home.data(), mode: 'grail', grailHasSearched: true, grailComplete: true, grailTab: 'best', grailWords: [{ name: 'кот', score: 300, path: [0, 1, 2] }], expandedBestWord: 0, undoWord: 'слово' };
+    const render = (adminMode) => renderToString(createSSRApp({ ...Home, data: () => ({ ...state, adminAuthorized: true }), computed: { ...Home.computed, adminMode: () => adminMode } }));
+    const normal = await render(false);
+    assert.doesNotMatch(normal, /Режим редактирования|Не принято игрой|Слово исключено/);
+    const admin = await render(true);
+    assert.match(admin, /Режим редактирования/);
+    assert.match(admin, /Слово исключено/);
+    assert.match(admin, /Отменить/);
+    assert.ok(admin.indexOf('Путь слова на поле') < admin.indexOf('Не принято игрой'));
+  } finally { await vite.close(); }
+});
+
+test('undo timers last 3000ms, replace older timers and are cleared on unmount', async () => {
+  const vite = await createServer({ server: { middlewareMode: true, ws: false }, appType: 'custom' });
+  const originalSet = globalThis.setTimeout;
+  const originalClear = globalThis.clearTimeout;
+  const oldWindow = globalThis.window;
+  try {
+    const { default: Home } = await vite.ssrLoadModule('/src/components/Home.vue');
+    const timers = [];
+    const cleared = [];
+    globalThis.setTimeout = (callback, delay) => { const timer = { callback, delay }; timers.push(timer); return timer; };
+    globalThis.clearTimeout = (timer) => cleared.push(timer);
+    const state = { ...Home.data(), saveSnapshot() {}, abortGrailStream() {}, clearGrailPreviews() {} };
+    Home.methods.onRejected.call(state, 'кот', true);
+    assert.equal(state.undoWord, 'кот');
+    assert.equal(timers[0].delay, 3000);
+    Home.methods.onRejected.call(state, 'дом', true);
+    assert.ok(cleared.includes(timers[0]));
+    timers[0].callback();
+    assert.equal(state.undoWord, 'дом');
+    timers[1].callback();
+    assert.equal(state.undoWord, '');
+    Home.methods.onRejected.call(state, 'лес', true);
+    globalThis.window = { removeEventListener() {} };
+    Home.beforeUnmount.call(state);
+    assert.ok(cleared.includes(timers[2]));
+  } finally {
+    globalThis.setTimeout = originalSet;
+    globalThis.clearTimeout = originalClear;
+    if (oldWindow === undefined) delete globalThis.window; else globalThis.window = oldWindow;
+    await vite.close();
+  }
+});
+
+test('undo failure keeps the word hidden and reports the server error', async () => {
+  const vite = await createServer({ server: { middlewareMode: true, ws: false }, appType: 'custom' });
+  const oldFetch = globalThis.fetch;
+  try {
+    const { default: Home } = await vite.ssrLoadModule('/src/components/Home.vue');
+    globalThis.fetch = async () => ({ ok: false, json: async () => ({ error: 'Не удалось вернуть слово' }) });
+    const state = { ...Home.data(), hiddenWords: ['кот'], undoWord: 'кот' };
+    await Home.methods.undoReject.call(state);
+    assert.deepEqual(state.hiddenWords, ['кот']);
+    assert.equal(state.adminError, 'Не удалось вернуть слово');
+  } finally { globalThis.fetch = oldFetch; await vite.close(); }
+});
+
+test('snapshot indicator is set only for restored results and cleared on new images', async () => {
+  const vite = await createServer({ server: { middlewareMode: true, ws: false }, appType: 'custom' });
+  const oldStorage = globalThis.sessionStorage;
+  try {
+    const { default: Home } = await vite.ssrLoadModule('/src/components/Home.vue');
+    let snapshot = { version: 1, time: Date.now(), state: { grailHasSearched: true, grailWords: [{ name: 'кот' }], grailSeries: [] } };
+    globalThis.sessionStorage = { getItem: () => JSON.stringify(snapshot) };
+    const state = { ...Home.data(), ...Home.methods };
+    state.restoreSnapshot();
+    assert.equal(state.restoredGrailResults, true);
+    state.handleGrailFilesChange({ target: { files: [], value: '' } });
+    assert.equal(state.restoredGrailResults, false);
+    snapshot = { version: 1, time: Date.now(), state: { grailHasSearched: true, grailWords: [], grailSeries: [] } };
+    state.restoreSnapshot();
+    assert.equal(state.restoredGrailResults, false);
+  } finally {
+    if (oldStorage === undefined) delete globalThis.sessionStorage; else globalThis.sessionStorage = oldStorage;
+    await vite.close();
+  }
+});
+
+test('rejected page distinguishes empty database and search and keeps export protected by the session view', async () => {
+  const vite = await createServer({ server: { middlewareMode: true, ws: false }, appType: 'custom' });
+  try {
+    const { default: Admin } = await vite.ssrLoadModule('/src/components/Admin.vue');
+    const render = (state) => renderToString(createSSRApp({ ...Admin, data: () => ({ ...Admin.data(), loading: false, ...state }), computed: { rejectedPage: () => true } }));
+    const empty = await render({ authenticated: true });
+    assert.match(empty, /Исключённых слов пока нет/);
+    assert.match(empty, /Экспорт TXT/);
+    const noMatch = await render({ authenticated: true, search: 'несуществующее' });
+    assert.match(noMatch, /По вашему запросу ничего не найдено/);
+    assert.doesNotMatch(noMatch, /Исключённых слов пока нет/);
+    assert.doesNotMatch(await render({ authenticated: false }), /Экспорт TXT/);
+  } finally { await vite.close(); }
+});
+
+test('rejected page restores through the API and refreshes its list', async () => {
+  const vite = await createServer({ server: { middlewareMode: true, ws: false }, appType: 'custom' });
+  const oldFetch = globalThis.fetch;
+  try {
+    const { default: Admin } = await vite.ssrLoadModule('/src/components/Admin.vue');
+    const calls = [];
+    globalThis.fetch = async (url, options) => {
+      calls.push({ url, method: options.method || 'GET' });
+      const result = options.method === 'POST' ? { word: 'кот' } : { total: 0, matched: 0, words: [] };
+      return { ok: true, json: async () => result };
+    };
+    const state = { ...Admin.data(), ...Admin.methods, words: [{ word: 'кот' }], total: 1 };
+    await state.restore('кот');
+    assert.deepEqual(calls.map((call) => call.method), ['POST', 'GET']);
+    assert.match(calls[0].url, /rejected\/restore$/);
+    assert.deepEqual(state.words, []);
+    assert.equal(state.total, 0);
+  } finally { globalThis.fetch = oldFetch; await vite.close(); }
+});
+
+test('confirmation is shown before the reject action is available', async () => {
+  const vite = await createServer({ server: { middlewareMode: true, ws: false }, appType: 'custom' });
+  try {
+    const { default: RejectWord } = await vite.ssrLoadModule('/src/components/RejectWord.vue');
+    const render = (confirming) => renderToString(createSSRApp({ ...RejectWord, data: () => ({ ...RejectWord.data(), confirming }) }, { word: 'кот' }));
+    const closed = await render(false);
+    assert.match(closed, /Не принято игрой/);
+    assert.doesNotMatch(closed, /Исключить слово/);
+    const open = await render(true);
+    assert.match(open, /Исключить слово «кот»/);
+    assert.match(open, /Отмена/);
+    assert.match(open, /Исключить/);
+  } finally { await vite.close(); }
+});
+
+test('saved-result explanation is limited to restored admin results', async () => {
+  const vite = await createServer({ server: { middlewareMode: true, ws: false }, appType: 'custom' });
+  try {
+    const { default: Home } = await vite.ssrLoadModule('/src/components/Home.vue');
+    const render = (restored, adminMode) => renderToString(createSSRApp({
+      ...Home,
+      data: () => ({ ...Home.data(), mode: 'grail', adminAuthorized: true, restoredGrailResults: restored }),
+      computed: { ...Home.computed, adminMode: () => adminMode },
+    }));
+    assert.match(await render(true, true), /Показаны сохранённые результаты/);
+    assert.doesNotMatch(await render(false, true), /Показаны сохранённые результаты/);
+    assert.doesNotMatch(await render(true, false), /Показаны сохранённые результаты/);
+  } finally { await vite.close(); }
+});

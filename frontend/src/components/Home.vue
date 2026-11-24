@@ -1,8 +1,11 @@
 <template>
   <main class="home">
-    <div v-if="adminMode && !adminAuthorized"><p>{{ adminLoading ? 'Проверяем сессию…' : 'Для редактирования войдите как администратор.' }}</p><router-link v-if="!adminLoading" to="/admin">Войти</router-link></div>
+    <div v-if="adminMode && !adminAuthorized" class="admin-access"><p>{{ adminLoading ? 'Проверяем сессию…' : 'Для редактирования войдите как администратор.' }}</p><router-link v-if="!adminLoading" class="admin-panel-link" to="/admin">Войти</router-link><p v-if="adminError" role="alert">{{ adminError }}</p></div>
     <template v-else>
-    <nav v-if="adminMode"><router-link to="/admin">Администрирование</router-link> · <router-link to="/admin/rejected">Исключённые слова</router-link></nav>
+    <nav v-if="adminMode" class="admin-panel" aria-label="Режим редактирования">
+      <span class="admin-panel-label">Режим редактирования</span>
+      <div class="admin-panel-actions"><router-link class="admin-panel-link" to="/admin">Управление</router-link><router-link class="admin-panel-link" to="/admin/rejected">Исключённые слова</router-link></div>
+    </nav>
     <section class="hero-card">
       <div class="hero-copy">
         <p class="eyebrow">Word Solver</p>
@@ -86,6 +89,7 @@
           <span>Выбрать 5 изображений</span>
         </label>
         <p class="selection-count">{{ grailFiles.length }} из 5</p>
+        <p v-if="adminMode && restoredGrailResults" class="restored-results">Показаны сохранённые результаты. Для нового поиска выберите 5 изображений.</p>
 
         <div v-if="grailSelectionMessage" class="notice selection-notice">
           {{ grailSelectionMessage }}
@@ -211,8 +215,12 @@
         </template>
       </aside>
     </section>
-    <div v-if="undoWord" class="notice" role="status">Слово исключено <button :disabled="undoBusy" @click="undoReject">Отменить</button></div>
-    <p v-if="adminError" class="notice" role="alert">{{ adminError }}</p>
+    <div v-if="adminMode && (undoWord || adminError)" class="admin-toast" role="status" aria-live="polite">
+      <span class="toast-icon" aria-hidden="true">{{ adminError ? '!' : '✓' }}</span>
+      <div class="toast-message"><strong>{{ adminError ? 'Не удалось выполнить действие' : 'Слово исключено' }}</strong><span>{{ adminError || undoWord }}</span></div>
+      <button v-if="undoWord" type="button" :disabled="undoBusy" @click="undoReject">{{ undoBusy ? 'Возвращаем…' : 'Отменить' }}</button>
+      <button v-else type="button" @click="adminError = ''">Закрыть</button>
+    </div>
     </template>
   </main>
 </template>
@@ -229,7 +237,7 @@ export default {
   components: { GrailPathMap, RejectWord },
   data() {
     return {
-      adminAuthorized: false, adminLoading: true, adminError: '', hiddenWords: [], undoWord: '', undoTimer: null, undoBusy: false,
+      adminAuthorized: false, adminLoading: true, adminError: '', hiddenWords: [], undoWord: '', undoTimer: null, undoBusy: false, undoGeneration: 0, restoredGrailResults: false,
       mode: 'normal',
       selectedImage: null,
       results: [],
@@ -276,12 +284,20 @@ export default {
     this.adminLoading = false;
   },
   methods: {
-    onRejected(word, created) { clearTimeout(this.undoTimer); this.hiddenWords = [...this.hiddenWords, word]; this.expandedBestWord = null; this.undoWord = created ? word : ''; this.adminError = created ? '' : 'Слово уже исключено'; if (created) this.undoTimer = setTimeout(() => { this.undoWord = ''; }, 3000); },
+    onRejected(word, created) {
+      clearTimeout(this.undoTimer);
+      const generation = ++this.undoGeneration;
+      this.hiddenWords = [...this.hiddenWords, word];
+      this.expandedBestWord = null;
+      this.undoWord = created ? word : '';
+      this.adminError = created ? '' : 'Слово уже исключено';
+      if (created) this.undoTimer = setTimeout(() => { if (this.undoGeneration === generation) this.undoWord = ''; }, 3000);
+    },
     async undoReject() {
       if (this.undoBusy || !this.undoWord) return;
-      const word = this.undoWord; clearTimeout(this.undoTimer); this.undoBusy = true;
-      try { await adminRequest('rejected/restore', { word }); this.hiddenWords = this.hiddenWords.filter((item) => item !== word); if (this.undoWord === word) this.undoWord = '';  }
-      catch (error) { this.adminError = error.message; if (this.undoWord === word) this.undoWord = '';  }
+      const word = this.undoWord; const generation = this.undoGeneration; clearTimeout(this.undoTimer); this.undoBusy = true;
+      try { await adminRequest('rejected/restore', { word }); this.hiddenWords = this.hiddenWords.filter((item) => item !== word); if (this.undoGeneration === generation) this.undoWord = '';  }
+      catch (error) { this.adminError = error.message; if (this.undoGeneration === generation) this.undoWord = '';  }
       finally { this.undoBusy = false; }
     },
     saveSnapshot() {
@@ -298,6 +314,7 @@ export default {
         if (data && data.version === 1 && Date.now() - data.time < 3600000 && data.state) {
           const keys = ['mode', 'results', 'hasSearched', 'grailWords', 'grailSeries', 'grailComplete', 'grailHasSearched', 'grailTab', 'expandedBestWord', 'expandedSeries', 'expandedSeriesWord', 'showAllSeriesWords', 'viewedWordKeys', 'hiddenWords'];
           keys.forEach((key) => { if (key in data.state) this[key] = data.state[key]; });
+          this.restoredGrailResults = Boolean(this.grailHasSearched && (this.grailWords.length || this.grailSeries.length));
         }
       } catch (_error) { /* Storage is optional. */ }
     },
@@ -308,6 +325,7 @@ export default {
     },
     handleGrailFilesChange(event) {
       const files = Array.from(event.target.files || []);
+      this.restoredGrailResults = false;
 
       this.abortGrailStream();
       this.clearGrailPreviews();
@@ -431,6 +449,7 @@ export default {
     async uploadGrailImages() {
       if (this.grailFiles.length !== 5 || this.grailLoading || this.grailSearchingRemaining) return;
 
+      this.restoredGrailResults = false;
       this.hiddenWords = [];
       this.abortGrailStream();
       const requestToken = this.grailRequestToken + 1;
@@ -577,6 +596,20 @@ export default {
 </script>
 
 <style scoped>
+
+.admin-panel, .admin-access { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 8px 16px; margin-bottom: 12px; padding: 10px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); box-shadow: 0 8px 22px rgba(36, 52, 71, .08); }
+.admin-panel-label { color: var(--muted); font-size: .82rem; font-weight: 800; }
+.admin-panel-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+.admin-panel-link { display: inline-flex; align-items: center; min-height: 44px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-light); color: var(--accent-hover); font-size: .85rem; font-weight: 700; text-decoration: none; }
+.admin-panel-link:hover { border-color: var(--accent); }
+.admin-panel-link:focus-visible, .admin-toast button:focus-visible { outline: 3px solid var(--color-warm); outline-offset: 2px; }
+.restored-results { padding: 10px 12px; border-radius: 9px; background: var(--surface-light); color: var(--muted); font-size: .85rem; }
+.admin-toast { position: fixed; z-index: 1000; left: 50%; bottom: calc(16px + env(safe-area-inset-bottom, 0px)); transform: translateX(-50%); display: flex; align-items: center; gap: 12px; width: min(460px, calc(100% - 32px)); padding: 12px 14px; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); color: var(--text); box-shadow: 0 12px 32px rgba(36, 52, 71, .24); }
+.toast-icon { display: grid; flex: 0 0 32px; place-items: center; height: 32px; border-radius: 50%; background: var(--surface-light); color: var(--accent); font-weight: 900; }
+.toast-message { display: grid; flex: 1; min-width: 0; line-height: 1.3; overflow-wrap: anywhere; }
+.toast-message span { color: var(--muted); font-size: .86rem; }
+.admin-toast button { min-height: 44px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface-light); color: var(--accent-hover); font-weight: 800; cursor: pointer; }
+.admin-toast button:disabled { opacity: .6; cursor: wait; }
 .home {
   width: min(1120px, 100%);
   margin: 0 auto;
